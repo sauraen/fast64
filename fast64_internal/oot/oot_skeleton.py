@@ -217,22 +217,41 @@ def getGroupIndexOfVert(vert, armatureObj, obj, rootGroupIndex):
 	#raise VertexWeightError("A vertex was found that was primarily weighted to a group that does not correspond to a bone in #the armature. (" + getGroupNameFromIndex(obj, vertGroup.group) + ') Either decrease the weights of this vertex group or remove it. If you think this group should correspond to a bone, make sure to check your spelling.')
 	return vertGroup.group
 
+class LimbInfo:
+	# Info about a limb, for the optimizer
+	def __init__(self, meshObj, meshInfo, boneName, groupIndex):
+		self.boneName = boneName
+		self.groupIndex = groupIndex
+		self.vertIndices = getVertIndices(meshObj, meshInfo, groupIndex)
+		self.matlsFaces, _ = getMatlsFaces(meshInfo, self.vertIndices, boneName, groupIndex)
+		self.matlsSplitVertTris = {}
+		if isinstance(self.matlsFaces, dict):
+			for matlIndex, faceList in self.matlsFaces.items():
+				self.matlsSplitVertTris[matlIndex] = getSplitVertTris(meshInfo, faceList)
+		self.ownOnlySVIndices = []
+		self.ownAndFutureSVIndices = []
+		self.pastSVIndices = {}
+
+class SplitVert:
+	# This represents one RCP vtx, which is different from both a Blender vertex
+	# and a Blender loop
+	def __init__(self, meshInfo, vertIndex, f3dvert):
+		self.vertIndex = vertIndex
+		self.groupIndex = meshInfo.vertexGroupInfo.vertexToGroup[vertIndex]
+		self.limbIndex = None
+		self.f3d = f3dvert
+
 def getSplitVerts(meshInfo):
-	splitVerts = []
-	for vertIndex, vertFaces in enumerate(meshInfo.vert):
+	meshInfo.splitVerts = []
+	for vertIndex, vertFaces in meshInfo.vert.items():
 		for face in vertFaces:
 			for loopIndex in face.loops:
 				f3dvert = meshInfo.f3dVert[loopIndex]
-				for sv in splitVerts:
-					if sv['f3d'] == f3dvert:
+				for sv in meshInfo.splitVerts:
+					if sv.f3d == f3dvert:
 						break
 				else:
-					splitVerts.append({
-						'vertIndex': vertIndex,
-						'groupIndex': meshInfo.vertexGroupInfo.vertexToGroup[vertIndex],
-						'f3d': f3dvert
-						})
-	meshInfo.splitVerts = splitVerts
+					meshInfo.splitVerts.append(SplitVert(meshInfo, vertIndex, f3dvert))
 	
 def getSplitVertTris(meshInfo, faces):
 	ret = []
@@ -240,14 +259,109 @@ def getSplitVertTris(meshInfo, faces):
 		faceSplitVertIndices = []
 		for loopIndex in face.loops:
 			f3dvert = meshInfo.f3dVert[loopIndex]
-			for i, sv in enumerate(splitVerts):
-				if sv['f3d'] == f3dvert:
+			for i, sv in enumerate(meshInfo.splitVerts):
+				if sv.f3d == f3dvert:
 					faceSplitVertIndices.append(i)
 					break
 			else:
 				raise PluginError("Internal error in getSplitVertTris")
 		ret.append(faceSplitVertIndices)
 	return ret
+
+def ootOptimFinalSetup(meshInfo):
+	for sv in meshInfo.splitVerts:
+		sv.limbIndex = meshInfo.vertexGroupInfo.vertexGroupToLimb[sv.groupIndex]
+	# List what split verts are used by the current limb, what verts from
+	# previous limbs it relies upon, and what verts it must carry forward to
+	# future limbs
+	for limbIndex, limbInfo in enumerate(meshInfo.limbs):
+		for faceList in limbInfo.matlsSplitVertTris.values():
+			for splitFace in faceList:
+				usedByFuture = False
+				for iv in range(3):
+					svIdx = splitFace[iv]
+					sv = meshInfo.splitVerts[svIdx]
+					if sv.limbIndex > limbIndex:
+						usedByFuture = True
+				for iv in range(3):
+					svIdx = splitFace[iv]
+					sv = meshInfo.splitVerts[svIdx]
+					if sv.limbIndex == limbIndex:
+						if usedByFuture:
+							if svIdx not in limbInfo.ownAndFutureSVIndices:
+								limbInfo.ownAndFutureSVIndices.append(svIdx)
+						else:
+							if svIdx not in limbInfo.ownOnlySVIndices:
+								limbInfo.ownOnlySVIndices.append(svIdx)
+					elif sv.limbIndex < limbIndex:
+						if sv.limbIndex not in limbInfo.pastSVIndices:
+							limbInfo.pastSVIndices[sv.limbIndex] = []
+						if svIdx not in limbInfo.pastSVIndices[sv.limbIndex]:
+							limbInfo.pastSVIndices[sv.limbIndex].append(svIdx)
+
+def isInMaterial(meshInfo, svIdx, matlIndex, limbIndex):
+	# Does this split vertex belong to any tris of the given limb and given material?
+	# This is done this way rather than by having each split vertex having a
+	# single material index, is because a split vertex may be shared by multiple
+	# materials. For example a single Blender vertex with tris which have different
+	# solid color materials, but all of them have the same UVs of 0, the same
+	# lighting setting, no sharp, etc.
+	if not isinstance(meshInfo.limbs[limbIndex].matlsFaces, dict):
+		return False
+	for tri in meshInfo.limbs[limbIndex].matlsSplitVertTris[matlIndex]:
+		if svIdx in tri:
+			return True
+	return False
+
+def getBestStartMaterial(meshInfo, matlChoices, limbIndex):
+	if limbIndex >= len(meshInfo.limbs):
+		return None
+	if not isinstance(meshInfo.limbs[limbIndex].matlsFaces, dict):
+		return None
+	ownMatls = meshInfo.limbs[limbIndex].matlsFaces.keys()
+	okayStartChoices = []
+	for m in matlChoices:
+		if m in ownMatls:
+			okayStartChoices.append(m)
+	if len(okayStartChoices) == 0:
+		return None
+	if len(okayStartChoices) == 1:
+		return okayStartChoices[0]
+	bestEndChoice = getBestStartMaterial(meshInfo, ownMatls, limbIndex+1)
+	if bestEndChoice in okayStartChoices:
+		# Want to end with this material, so don't start with it
+		okayStartChoices.remove(bestEndChoice)
+	# Sort by how many verts would be carried over
+	carriedOverVerts = {}
+	for o in okayStartChoices:
+		c = 0
+		if limbIndex-1 in meshInfo.limbs[limbIndex].pastSVIndices.keys():
+			sharedSVs = meshInfo.limbs[limbIndex].pastSVIndices[limbIndex-1]
+			for svIdx in sharedSVs:
+				if isInMaterial(meshInfo, svIdx, o, limbIndex-1):
+					c += 1
+		carriedOverVerts[o] = c
+	return max(carriedOverVerts, key=carriedOverVerts.get)
+
+def ootOptimSeqMaterials(opSeq, meshInfo):
+	curMatl = None
+	for limbIndex in range(len(meshInfo.limbs)):
+		opSeq.append(('limbstart', limbIndex))
+		if not isinstance(meshInfo.limbs[limbIndex].matlsFaces, dict):
+			continue
+		ownMatls = list(meshInfo.limbs[limbIndex].matlsSplitVertTris.keys())
+		endMatl = getBestStartMaterial(meshInfo, ownMatls, limbIndex+1)
+		while len(ownMatls) > 0:
+			if curMatl not in ownMatls:
+				for m in ownMatls:
+					if m != endMatl or len(ownMatls) == 1:
+						curMatl = m
+						break
+				opSeq.append(('matl', curMatl))
+			ownMatls.remove(curMatl)
+			opSeq.append(('tris', meshInfo.limbs[limbIndex].matlsSplitVertTris[curMatl]))
+	from pprint import pprint
+	pprint(opSeq)
 
 def ootDuplicateArmature(originalArmatureObj):
 	# Duplicate objects to apply scale / modifiers / linked data
@@ -350,9 +464,12 @@ def ootConvertArmatureToSkeleton(originalArmatureObj, convertTransformMatrix,
 		
 		if bpy.context.scene.ootSkeletonExportOptimize:
 			getSplitVerts(meshInfo)
-			meshInfo.structure = []
+			meshInfo.limbs = []
 			ootBoneOptimSetup(0, startBoneName, armatureObj, meshObj, meshInfo)
-			TODO()
+			ootOptimFinalSetup(meshInfo)
+			opSeq = []
+			ootOptimSeqMaterials(opSeq, meshInfo)
+			raise NotImplementedError("Export not done")
 		else:
 			ootProcessBone(fModel, startBoneName, skeleton, 0,
 				meshObj, armatureObj, convertTransformMatrix, meshInfo, convertTextureData, 
@@ -370,21 +487,10 @@ def ootConvertArmatureToSkeleton(originalArmatureObj, convertTransformMatrix,
 		raise Exception(str(e))
 
 def ootBoneOptimSetup(limbIndex, boneName, armatureObj, meshObj, meshInfo):
-	groupIndex = getGroupIndexFromname(meshObj, boneName);
-	vertIndices = getVertIndices(meshObj, groupIndex)
-	matlsFaces, _ = getMatlsFaces(meshInfo, vertIndices, boneName, groupIndex)
-	matlsSplitVertTris = {}
-	if isinstance(matlsFaces, dict):
-		for matlIndex, faceList in matlsFaces:
-			matlsSplitVertTris[matlIndex] = getSplitVertTris(meshInfo, faceList)
-	meshInfo.structure.append({
-		'boneName': boneName,
-		'groupIndex': groupIndex,
-		'vertIndices': vertIndices,
-		'matlsFaces': matlsFaces,
-		'matlsSplitVertTris': matlsSplitVertTris
-		})
+	groupIndex = getGroupIndexFromname(meshObj, boneName)
 	meshInfo.vertexGroupInfo.vertexGroupToLimb[groupIndex] = limbIndex
+	limb = LimbInfo(meshObj, meshInfo, boneName, groupIndex)
+	meshInfo.limbs.append(limb)
 	limbIndex += 1
 	bone = armatureObj.data.bones[boneName]
 	childrenNames = getSortedChildren(armatureObj, bone)

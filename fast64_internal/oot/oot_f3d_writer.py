@@ -1,4 +1,4 @@
-matlsFacesimport shutil, copy, bpy, os
+import shutil, copy, bpy, os
 from bpy.utils import register_class, unregister_class
 
 from .oot_utility import *
@@ -11,7 +11,7 @@ from ..panels import OOT_Panel
 from .oot_model_classes import *
 from .oot_scene_room import *
 
-def getVertIndices(meshObj, groupIndex):
+def getVertIndices(meshObj, meshInfo, groupIndex):
 	return [vert.index for vert in meshObj.data.vertices if\
 		meshInfo.vertexGroupInfo.vertexToGroup[vert.index] == groupIndex]
 
@@ -90,7 +90,7 @@ def ootProcessVertexGroup(fModel, meshObj, vertexGroup, convertTransformMatrix, 
 	mesh = meshObj.data
 	bone = armatureObj.data.bones[vertexGroup]
 	currentGroupIndex = getGroupIndexFromname(meshObj, vertexGroup)
-	vertIndices = getVertIndices(meshObj, currentGroupIndex)
+	vertIndices = getVertIndices(meshObj, meshInfo, currentGroupIndex)
 
 	matlsFaces, hasSkinnedFaces = getMatlsFaces(meshInfo, vertIndices, vertexGroup, currentGroupIndex)
 	if matlsFaces is None:
