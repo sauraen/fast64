@@ -61,11 +61,12 @@ def getInfoDict(obj):
 
 	infoDict = MeshInfo()
 
-	vertDict = infoDict.vert
-	edgeDict = infoDict.edge
-	f3dVertDict = infoDict.f3dVert
-	edgeValidDict = infoDict.edgeValid
-	validNeighborDict = infoDict.validNeighbors
+	# "face" = MeshLoopTriangle
+	vertDict = infoDict.vert # key: vert idx, value: list of faces
+	edgeDict = infoDict.edge # key: (v1idx, v2idx), value: list of faces
+	f3dVertDict = infoDict.f3dVert # key: loop idx, value: converted "vtx" tuple (position, uv, colorOrNormal)
+	edgeValidDict = infoDict.edgeValid # key: (face1, face2), value: bool valid (loops shared by faces at both ends of edge)
+	validNeighborDict = infoDict.validNeighbors # key: face, value: list of neighbor faces
 
 	mesh = obj.data
 	if len(obj.data.uv_layers) == 0:
