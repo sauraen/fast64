@@ -38,7 +38,7 @@ def getLoopFromVert(inputIndex, face):
 
 class VertexGroupInfo:
 	def __init__(self):
-		self.vertexGroups = {} # vertex index : vertex group
+		self.vertexToGroup = {} # vertex index : vertex group
 		self.vertexGroupToLimb = {}
 
 class MeshInfo:
@@ -67,6 +67,8 @@ def getInfoDict(obj):
 	f3dVertDict = infoDict.f3dVert # key: loop idx, value: converted "vtx" tuple (position, uv, colorOrNormal)
 	edgeValidDict = infoDict.edgeValid # key: (face1, face2), value: bool valid (loops shared by faces at both ends of edge)
 	validNeighborDict = infoDict.validNeighbors # key: face, value: list of neighbor faces
+	# also added in getGroupIndices:
+	# vertexGroupInfo.vertexToGroup: key: vert idx, value: vtx group idx
 
 	mesh = obj.data
 	if len(obj.data.uv_layers) == 0:
@@ -844,7 +846,7 @@ class TriangleConverter:
 
 		for loopIndex in face.loops:
 			loop = self.triConverterInfo.mesh.loops[loopIndex]
-			vertexGroup = self.triConverterInfo.vertexGroupInfo.vertexGroups[loop.vertex_index] if self.triConverterInfo.vertexGroupInfo is not None else None
+			vertexGroup = self.triConverterInfo.vertexGroupInfo.vertexToGroup[loop.vertex_index] if self.triConverterInfo.vertexGroupInfo is not None else None
 			bufferVert = BufferVertex(getF3DVert(loop, face, self.convertInfo, self.triConverterInfo.mesh),
 				vertexGroup, face.material_index)
 			triIndices.append(bufferVert)

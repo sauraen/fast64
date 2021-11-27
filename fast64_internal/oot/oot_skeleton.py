@@ -190,7 +190,7 @@ def setBoneNonRotated(armatureObj, boneName, restPoseRotations):
 def getGroupIndices(meshInfo, armatureObj, meshObj, rootGroupIndex):
 	meshInfo.vertexGroupInfo = OOTVertexGroupInfo()
 	for vertex in meshObj.data.vertices:
-		meshInfo.vertexGroupInfo.vertexGroups[vertex.index] = getGroupIndexOfVert(vertex, armatureObj, meshObj, rootGroupIndex)
+		meshInfo.vertexGroupInfo.vertexToGroup[vertex.index] = getGroupIndexOfVert(vertex, armatureObj, meshObj, rootGroupIndex)
 
 def getGroupIndexOfVert(vert, armatureObj, obj, rootGroupIndex):
 	actualGroups = []
@@ -216,6 +216,38 @@ def getGroupIndexOfVert(vert, armatureObj, obj, rootGroupIndex):
 	#if vertGroup not in actualGroups:
 	#raise VertexWeightError("A vertex was found that was primarily weighted to a group that does not correspond to a bone in #the armature. (" + getGroupNameFromIndex(obj, vertGroup.group) + ') Either decrease the weights of this vertex group or remove it. If you think this group should correspond to a bone, make sure to check your spelling.')
 	return vertGroup.group
+
+def getSplitVerts(meshInfo):
+	splitVerts = []
+	for vertIndex, vertFaces in enumerate(meshInfo.vert):
+		for face in vertFaces:
+			for loopIndex in face.loops:
+				f3dvert = meshInfo.f3dVert[loopIndex]
+				for sv in splitVerts:
+					if sv['f3d'] == f3dvert:
+						break
+				else:
+					splitVerts.append({
+						'vertIndex': vertIndex,
+						'groupIndex': meshInfo.vertexGroupInfo.vertexToGroup[vertIndex],
+						'f3d': f3dvert
+						})
+	meshInfo.splitVerts = splitVerts
+	
+def getSplitVertTris(meshInfo, faces):
+	ret = []
+	for face in faces:
+		faceSplitVertIndices = []
+		for loopIndex in face.loops:
+			f3dvert = meshInfo.f3dVert[loopIndex]
+			for i, sv in enumerate(splitVerts):
+				if sv['f3d'] == f3dvert:
+					faceSplitVertIndices.append(i)
+					break
+			else:
+				raise PluginError("Internal error in getSplitVertTris")
+		ret.append(faceSplitVertIndices)
+	return ret
 
 def ootDuplicateArmature(originalArmatureObj):
 	# Duplicate objects to apply scale / modifiers / linked data
@@ -315,9 +347,16 @@ def ootConvertArmatureToSkeleton(originalArmatureObj, convertTransformMatrix,
 
 		#for i in range(len(startBoneNames)):
 		#	startBoneName = startBoneNames[i]
-		ootProcessBone(fModel, startBoneName, skeleton, 0,
-			meshObj, armatureObj, convertTransformMatrix, meshInfo, convertTextureData, 
-			name, skeletonOnly, drawLayer, None)
+		
+		if bpy.context.scene.ootSkeletonExportOptimize:
+			getSplitVerts(meshInfo)
+			meshInfo.structure = []
+			ootBoneOptimSetup(0, startBoneName, armatureObj, meshObj, meshInfo)
+			TODO()
+		else:
+			ootProcessBone(fModel, startBoneName, skeleton, 0,
+				meshObj, armatureObj, convertTransformMatrix, meshInfo, convertTextureData, 
+				name, skeletonOnly, drawLayer, None)
 
 		cleanupDuplicatedObjects(meshObjs + [armatureObj])
 		originalArmatureObj.select_set(True)
@@ -329,6 +368,29 @@ def ootConvertArmatureToSkeleton(originalArmatureObj, convertTransformMatrix,
 		originalArmatureObj.select_set(True)
 		bpy.context.view_layer.objects.active = originalArmatureObj
 		raise Exception(str(e))
+
+def ootBoneOptimSetup(limbIndex, boneName, armatureObj, meshObj, meshInfo):
+	groupIndex = getGroupIndexFromname(meshObj, boneName);
+	vertIndices = getVertIndices(meshObj, groupIndex)
+	matlsFaces, _ = getMatlsFaces(meshInfo, vertIndices, boneName, groupIndex)
+	matlsSplitVertTris = {}
+	if isinstance(matlsFaces, dict):
+		for matlIndex, faceList in matlsFaces:
+			matlsSplitVertTris[matlIndex] = getSplitVertTris(meshInfo, faceList)
+	meshInfo.structure.append({
+		'boneName': boneName,
+		'groupIndex': groupIndex,
+		'vertIndices': vertIndices,
+		'matlsFaces': matlsFaces,
+		'matlsSplitVertTris': matlsSplitVertTris
+		})
+	meshInfo.vertexGroupInfo.vertexGroupToLimb[groupIndex] = limbIndex
+	limbIndex += 1
+	bone = armatureObj.data.bones[boneName]
+	childrenNames = getSortedChildren(armatureObj, bone)
+	for childName in childrenNames:
+		limbIndex = ootBoneOptimSetup(limbIndex, childName, armatureObj, meshObj, meshInfo)
+	return limbIndex
 
 def ootProcessBone(fModel, boneName, parentLimb, nextIndex, meshObj, armatureObj, 
 	convertTransformMatrix, meshInfo, convertTextureData, namePrefix, skeletonOnly,

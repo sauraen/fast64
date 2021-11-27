@@ -1,4 +1,4 @@
-import shutil, copy, bpy, os
+matlsFacesimport shutil, copy, bpy, os
 from bpy.utils import register_class, unregister_class
 
 from .oot_utility import *
@@ -11,34 +11,22 @@ from ..panels import OOT_Panel
 from .oot_model_classes import *
 from .oot_scene_room import *
 
-# returns: 
-# 	mesh, 
-# 	anySkinnedFaces (to determine if skeleton should be flex)
-def ootProcessVertexGroup(fModel, meshObj, vertexGroup, convertTransformMatrix, armatureObj, namePrefix,
-	meshInfo, drawLayerOverride, convertTextureData, lastMaterialName):
+def getVertIndices(meshObj, groupIndex):
+	return [vert.index for vert in meshObj.data.vertices if\
+		meshInfo.vertexGroupInfo.vertexToGroup[vert.index] == groupIndex]
 
-	optimize = bpy.context.scene.ootSkeletonExportOptimize
-	if not optimize:
-		lastMaterialName = None
-
-	mesh = meshObj.data
-	currentGroupIndex = getGroupIndexFromname(meshObj, vertexGroup)
-	nextDLIndex = len(meshInfo.vertexGroupInfo.vertexGroupToMatrixIndex)
-	vertIndices = [vert.index for vert in meshObj.data.vertices if\
-		meshInfo.vertexGroupInfo.vertexGroups[vert.index] == currentGroupIndex]
-
+def getMatlsFaces(meshInfo, vertIndices, vertexGroupName, currentGroupIndex):
+	# returns (a, hasSkinnedFaces)
+	# where a = None for nothing, False for dummy DL, else matlsFaces dict
+	
 	if len(vertIndices) == 0:
-		print("No vert indices in " + vertexGroup)
+		print("No vert indices in " + vertexGroupName)
 		return None, False
 
-	bone = armatureObj.data.bones[vertexGroup]
-	
 	# dict of material_index keys to face array values
-	groupFaces = {}
-	
-	hasSkinnedFaces = False
-
+	matlsFaces = {}
 	handledFaces = []
+	hasSkinnedFaces = False
 	anyConnectedToUnhandledBone = False
 	for vertIndex in vertIndices:
 		if vertIndex not in meshInfo.vert:
@@ -53,7 +41,7 @@ def ootProcessVertexGroup(fModel, meshObj, vertexGroup, convertTransformMatrix, 
 			# A Blender loop is interpreted as face + loop index
 			for i in range(3):
 				faceVertIndex = face.vertices[i]
-				vertGroupIndex = meshInfo.vertexGroupInfo.vertexGroups[faceVertIndex]
+				vertGroupIndex = meshInfo.vertexGroupInfo.vertexToGroup[faceVertIndex]
 				if vertGroupIndex != currentGroupIndex:
 					hasSkinnedFaces = True
 				if vertGroupIndex not in meshInfo.vertexGroupInfo.vertexGroupToLimb:
@@ -66,38 +54,63 @@ def ootProcessVertexGroup(fModel, meshObj, vertexGroup, convertTransformMatrix, 
 			if connectedToUnhandledBone:
 				continue
 
-			if face.material_index not in groupFaces:
-				groupFaces[face.material_index] = []
-			groupFaces[face.material_index].append(face)
+			if face.material_index not in matlsFaces:
+				matlsFaces[face.material_index] = []
+			matlsFaces[face.material_index].append(face)
 			
 			handledFaces.append(face)
 
-	if len(groupFaces) == 0:
-		print("No faces in " + vertexGroup)
+	nextDLIndex = len(meshInfo.vertexGroupInfo.vertexGroupToMatrixIndex)
+	
+	if len(matlsFaces) == 0:
+		print("No faces in " + vertexGroupName)
 
 		# OOT will only allocate matrix if DL exists.
 		# This doesn't handle case where vertices belong to a limb, but not triangles.
 		# Therefore we create a dummy DL
 		if anyConnectedToUnhandledBone:
-			fMesh = fModel.addMesh(vertexGroup, namePrefix, drawLayerOverride, False, bone)
-			fModel.endDraw(fMesh, bone)
 			meshInfo.vertexGroupInfo.vertexGroupToMatrixIndex[currentGroupIndex] = nextDLIndex
-			return fMesh, False
+			return False, False
 		else:
 			return None, False
 	
 	meshInfo.vertexGroupInfo.vertexGroupToMatrixIndex[currentGroupIndex] = nextDLIndex
+	return matlsFaces, hasSkinnedFaces
+
+# returns: 
+# 	mesh, 
+# 	anySkinnedFaces (to determine if skeleton should be flex)
+def ootProcessVertexGroup(fModel, meshObj, vertexGroup, convertTransformMatrix, armatureObj, namePrefix,
+	meshInfo, drawLayerOverride, convertTextureData, lastMaterialName):
+
+	optimize = bpy.context.scene.ootSkeletonExportOptimize
+	if not optimize:
+		lastMaterialName = None
+
+	mesh = meshObj.data
+	bone = armatureObj.data.bones[vertexGroup]
+	currentGroupIndex = getGroupIndexFromname(meshObj, vertexGroup)
+	vertIndices = getVertIndices(meshObj, currentGroupIndex)
+
+	matlsFaces, hasSkinnedFaces = getMatlsFaces(meshInfo, vertIndices, vertexGroup, currentGroupIndex)
+	if matlsFaces is None:
+		return None, False, lastMaterialName
+	if matlsFaces is False:
+		fMesh = fModel.addMesh(vertexGroup, namePrefix, drawLayerOverride, False, bone)
+		fModel.endDraw(fMesh, bone)
+		return fMesh, False, lastMaterialName
+	
 	triConverterInfo = OOTTriangleConverterInfo(meshObj, armatureObj.data, fModel.f3d, convertTransformMatrix, meshInfo)
 
 	if optimize:
 		# If one of the materials we need to draw is the currently loaded material,
 		# do this one first.
-		newGroupFaces = {
-			material_index: faces for material_index, faces in groupFaces.items()
+		newMatlsFaces = {
+			material_index: faces for material_index, faces in matlsFaces.items()
 			if meshObj.material_slots[material_index].material.name == lastMaterialName
 		}
-		newGroupFaces.update(groupFaces)
-		groupFaces = newGroupFaces
+		newMatlsFaces.update(matlsFaces)
+		matlsFaces = newMatlsFaces
 
 	# Usually we would separate DLs into different draw layers.
 	# however it seems like OOT skeletons don't have this ability.
@@ -105,7 +118,7 @@ def ootProcessVertexGroup(fModel, meshObj, vertexGroup, convertTransformMatrix, 
 	# This means everything will be saved to one mesh. 
 	fMesh = fModel.addMesh(vertexGroup, namePrefix, drawLayerOverride, False, bone)
 	
-	for material_index, faces in groupFaces.items():
+	for material_index, faces in matlsFaces.items():
 		material = meshObj.material_slots[material_index].material
 		checkForF3dMaterialInFaces(meshObj, material)
 		fMaterial, texDimensions = \
