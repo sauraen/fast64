@@ -99,6 +99,7 @@ def getInfoDict(obj):
 		for loopIndex in face.loops:
 			convertInfo = LoopConvertInfo(uv_data, obj,
 				isLightingDisabled(obj.material_slots[face.material_index].material))
+			assert loopIndex not in f3dVertDict
 			f3dVertDict[loopIndex] = getF3DVert(mesh.loops[loopIndex], face, convertInfo, mesh)
 	for face in mesh.loop_triangles:
 		for edgeKey in face.edge_keys:

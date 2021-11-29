@@ -194,6 +194,7 @@ def getGroupIndices(meshInfo, armatureObj, meshObj, rootGroupIndex):
 	meshInfo.vertexGroupInfo = OOTVertexGroupInfo()
 	for vertex in meshObj.data.vertices:
 		meshInfo.vertexGroupInfo.vertexToGroup[vertex.index] = getGroupIndexOfVert(vertex, armatureObj, meshObj, rootGroupIndex)
+		#print(vertex.index, meshInfo.vertexGroupInfo.vertexToGroup[vertex.index], vertex.co)
 
 def getGroupIndexOfVert(vert, armatureObj, obj, rootGroupIndex):
 	actualGroups = []
@@ -230,7 +231,7 @@ class LimbInfo:
 		self.matlsSplitVertTris = {}
 		if isinstance(self.matlsFaces, dict):
 			for matlIndex, faceList in self.matlsFaces.items():
-				self.matlsSplitVertTris[matlIndex] = getSplitVertTris(meshInfo, faceList)
+				self.matlsSplitVertTris[matlIndex] = getSplitVertTris(meshInfo, faceList, meshObj.data)
 		self.ownOnlySVIndices = set()
 		self.ownAndFutureSVIndices = set()
 		self.futureOnlySVIndices = set()
@@ -239,32 +240,34 @@ class LimbInfo:
 class SplitVert:
 	# This represents one RCP vtx, which is different from both a Blender vertex
 	# and a Blender loop
-	def __init__(self, meshInfo, vertIndex, f3dvert):
-		self.vertIndex = vertIndex
-		self.groupIndex = meshInfo.vertexGroupInfo.vertexToGroup[vertIndex]
+	def __init__(self, groupIndex, f3dvert):
+		self.groupIndex = groupIndex
 		self.limbIndex = None
 		self.f3d = f3dvert
 
-def getSplitVerts(meshInfo):
+def getSplitVerts(meshInfo, mesh):
 	meshInfo.splitVerts = []
-	for vertIndex, vertFaces in meshInfo.vert.items():
-		for face in vertFaces:
-			for loopIndex in face.loops:
-				f3dvert = meshInfo.f3dVert[loopIndex]
-				for sv in meshInfo.splitVerts:
-					if sv.f3d == f3dvert:
-						break
-				else:
-					meshInfo.splitVerts.append(SplitVert(meshInfo, vertIndex, f3dvert))
-	
-def getSplitVertTris(meshInfo, faces):
+	for loopIndex, f3dvert in meshInfo.f3dVert.items():
+		vertIndex = mesh.loops[loopIndex].vertex_index
+		groupIndex = meshInfo.vertexGroupInfo.vertexToGroup[vertIndex]
+		# See if equivalent f3d already exists. If in same group, they can
+		# be merged.
+		for sv in meshInfo.splitVerts:
+			if sv.f3d == f3dvert and sv.groupIndex == groupIndex:
+				break
+		else:
+			meshInfo.splitVerts.append(SplitVert(groupIndex, f3dvert))
+		
+def getSplitVertTris(meshInfo, faces, mesh):
 	ret = []
 	for face in faces:
 		faceSplitVertIndices = []
 		for loopIndex in face.loops:
 			f3dvert = meshInfo.f3dVert[loopIndex]
+			vertIndex = mesh.loops[loopIndex].vertex_index
+			groupIndex = meshInfo.vertexGroupInfo.vertexToGroup[vertIndex]
 			for i, sv in enumerate(meshInfo.splitVerts):
-				if sv.f3d == f3dvert:
+				if sv.f3d == f3dvert and sv.groupIndex == groupIndex:
 					faceSplitVertIndices.append(i)
 					break
 			else:
@@ -275,21 +278,22 @@ def getSplitVertTris(meshInfo, faces):
 def ootOptimFinalSetup(meshInfo):
 	for sv in meshInfo.splitVerts:
 		sv.limbIndex = meshInfo.vertexGroupInfo.vertexGroupToLimb[sv.groupIndex]
-	# First arrange into own and future ignoring the "only" part, then
+	# First arrange into past, own, and future ignoring the "only" part, then
 	# afterwards separate those in both.
-	for svIdx, sv in enumerate(meshInfo.splitVerts):
-		mainLimb = meshInfo.limbs[sv.limbIndex]
-		mainLimb.ownOnlySVIndices.add(svIdx)
-		for limbIndex, limbInfo in enumerate(meshInfo.limbs):
-			if limbIndex <= sv.limbIndex:
-				continue
-			for matlIndex, faceList in limbInfo.matlsSplitVertTris.items():
-				for face in faceList:
-					if svIdx in face:
-						if limbIndex not in limbInfo.pastSVIndices:
-							limbInfo.pastSVIndices[limbIndex] = set()
-						limbInfo.pastSVIndices[limbIndex].add(svIdx)
-						mainLimb.futureOnlySVIndices.add(svIdx)
+	for limbIndex, limbInfo in enumerate(meshInfo.limbs):
+		for matlIndex, faceList in limbInfo.matlsSplitVertTris.items():
+			for face in faceList:
+				# Tri must belong to max limb of its three verts
+				assert limbIndex == max([meshInfo.splitVerts[svIdx].limbIndex for svIdx in face])
+				for svIdx in face:
+					sv = meshInfo.splitVerts[svIdx]
+					if limbIndex == sv.limbIndex:
+						limbInfo.ownOnlySVIndices.add(svIdx)
+					else:
+						if sv.limbIndex not in limbInfo.pastSVIndices:
+							limbInfo.pastSVIndices[sv.limbIndex] = set()
+						limbInfo.pastSVIndices[sv.limbIndex].add(svIdx)
+						meshInfo.limbs[sv.limbIndex].futureOnlySVIndices.add(svIdx)
 	for limbInfo in meshInfo.limbs:
 		limbInfo.ownAndFutureSVIndices = limbInfo.ownOnlySVIndices & limbInfo.futureOnlySVIndices
 		limbInfo.ownOnlySVIndices = limbInfo.ownOnlySVIndices - limbInfo.ownAndFutureSVIndices
@@ -390,103 +394,138 @@ def ootOptimSeqTrisAndSVLifetimes(opSeq, meshInfo):
 		for svIdx in limb.futureOnlySVIndices:
 			opSeq.insert(endPtr, ('svbegin', svIdx))
 		# Get SV alive bools at each end
-		allPastSVIndices = [svIdx for svList in limb.pastSVIndices.values() for svIdx in svList]
+		allPastSVIndices = set([svIdx for svList in limb.pastSVIndices.values() for svIdx in svList])
 		print("Past alive:" , allPastSVIndices)
 		print("Own and future:", limb.ownAndFutureSVIndices)
 		startAlive = [svIdx in allPastSVIndices for svIdx in range(nsv)]
 		endAlive = [svIdx in limb.ownAndFutureSVIndices for svIdx in range(nsv)]
-		# Get all tris for limb
+		# Init remaining items
 		allTrisLeft = [tri for triList in limb.matlsSplitVertTris.values() for tri in triList]
+		pastSVsLeft = allPastSVIndices.copy()
+		futureSVsLeft = limb.ownAndFutureSVIndices.copy()
+		startEnabled = True
+		endEnabled = True
 		# Loop
 		while True:
-			assert opSeq[startPtr][0] == 'trilist'
-			startTris = opSeq[startPtr][1]
-			assert opSeq[endPtr-1][0] == 'trilist'
-			endTris = opSeq[endPtr-1][1]
-			# Insert all tris possible with current verts
-			for tri in startTris:
-				if all(startAlive[tri[i]] for i in range(3)):
-					print("At start, adding tri ", tri)
-					opSeq.insert(startPtr, ('tri', tri))
-					startPtr += 1
-					endPtr += 1
-					startTris.remove(tri)
-					allTrisLeft.remove(tri)
-			for tri in endTris:
-				if all(endAlive[tri[i]] for i in range(3)):
-					print("At end, adding tri ", tri)
-					opSeq.insert(endPtr, ('tri', tri))
-					endTris.remove(tri)
-					allTrisLeft.remove(tri)
-			print("{} tris left".format(len(allTrisLeft)))
-			# End or begin lifetimes for all verts which are no longer needed
-			for svIdx in range(nsv):
-				if startAlive[svIdx] == endAlive[svIdx]:
-					# If alive on neither end, not relevant; if alive on both
-					# ends, let it stay alive throughout
-					continue
-				for tri in allTrisLeft:
-					if svIdx in tri:
-						break
-				else:
-					if startAlive[svIdx]:
-						print("Done with sv {} at start".format(svIdx))
-						startAlive[svIdx] = False
-						opSeq.insert(startPtr, ('svend', svIdx))
+			limbDone = False
+			# Loop as long as there was a new trilist
+			while True:
+				assert opSeq[startPtr][0] == 'trilist'
+				startTris = opSeq[startPtr][1]
+				assert opSeq[endPtr-1][0] == 'trilist'
+				endTris = opSeq[endPtr-1][1]
+				# Insert all tris possible with current verts
+				for tri in reversed(startTris):
+					if all(startAlive[tri[i]] for i in range(3)):
+						print("At start, adding tri ", tri)
+						opSeq.insert(startPtr, ('tri', tri))
 						startPtr += 1
 						endPtr += 1
+						startTris.remove(tri)
+						allTrisLeft.remove(tri)
+				for tri in reversed(endTris):
+					if all(endAlive[tri[i]] for i in range(3)):
+						print("At end, adding tri ", tri)
+						opSeq.insert(endPtr, ('tri', tri))
+						endTris.remove(tri)
+						allTrisLeft.remove(tri)
+				print("{} tris left".format(len(allTrisLeft)))
+				#print("startAlive", [i for i in range(nsv) if startAlive[i]])
+				# End or begin lifetimes for all verts which are no longer needed
+				for svIdx in range(nsv):
+					if startAlive[svIdx] == endAlive[svIdx]:
+						# If alive on neither end, not relevant; if alive on both
+						# ends, let it stay alive throughout
+						continue
+					for tri in allTrisLeft:
+						if svIdx in tri:
+							break
 					else:
-						assert endAlive[svIdx]
-						print("Done with sv {} at end".format(svIdx))
-						endAlive[svIdx] = False
-						opSeq.insert(endPtr, ('svbegin', svIdx))
-			# Update pointers and possibly exit
-			if len(startTris) == 0:
-				del opSeq[startPtr]
-				endPtr -= 1
-				if opSeq[startPtr][0] == 'matl':
-					startPtr += 1
-				if startPtr >= endPtr:
-					break
-			if len(endTris) == 0:
-				del opSeq[endPtr-1]
-				endPtr -= 1
-				if opSeq[endPtr-1][0] == 'matl':
+						if startAlive[svIdx]:
+							print("Done with sv {} at start".format(svIdx))
+							startAlive[svIdx] = False
+							pastSVsLeft.discard(svIdx)
+							opSeq.insert(startPtr, ('svend', svIdx))
+							startPtr += 1
+							endPtr += 1
+						else:
+							assert endAlive[svIdx]
+							print("Done with sv {} at end".format(svIdx))
+							endAlive[svIdx] = False
+							futureSVsLeft.discard(svIdx)
+							opSeq.insert(endPtr, ('svbegin', svIdx))
+				# Only traverse in both directions if there's past or future SVs,
+				# otherwise continue traversing in the last direction.
+				if startEnabled and endEnabled:
+					if len(pastSVsLeft) == 0:
+						print("Disabling start traversal")
+						startEnabled = False
+					elif len(futureSVsLeft) == 0:
+						print("Disabling end traversal")
+						endEnabled = False
+				# Update pointers and possibly exit
+				gotNewTriLists = False
+				if len(startTris) == 0:
+					print("Done with trilist at start")
+					gotNewTriLists = True
+					del opSeq[startPtr]
 					endPtr -= 1
-				if startPtr >= endPtr:
+					if opSeq[startPtr][0] == 'matl':
+						startPtr += 1
+					if startPtr >= endPtr:
+						limbDone = True
+						break
+				if len(endTris) == 0:
+					print("Done with trilist at end")
+					gotNewTriLists = True
+					del opSeq[endPtr-1]
+					endPtr -= 1
+					if opSeq[endPtr-1][0] == 'matl':
+						endPtr -= 1
+					if startPtr >= endPtr:
+						limbDone = True
+						break
+				if not gotNewTriLists:
 					break
+			if limbDone:
+				break
 			# Weight allTrisLeft based on:
-			# -- 10x: how many verts of theirs are already loaded
-			# -- 100x: how many verts they would cause to be no longer needed if
-			#    they were drawn, and if that vert is in one of the end lists,
-			#    double that
-			# -- 1x: for free, so that verts with more tris are prioritized
-			def getTriWeighting(tri, alive, svindices):
-				wgt = 1 + 10 * sum([alive[tri[i]] * 1 for i in range(3)])
+			def getTriWeighting(tri, alive, startOrEndSVs):
+				wtLoaded = 10 # how many verts of theirs are already loaded
+				wtLastTri = 21 # how many verts this is the last tri which uses
+				wtStartOrEnd = 31 # how many verts this tri uses which are from the start or end set
+				wgt = 1 # free bonus for all tris a vert is in
+				wgt += wtLoaded * sum([alive[tri[i]] * 1 for i in range(3)])
 				for svIdx in tri:
+					if svIdx in startOrEndSVs:
+						wgt += wtStartOrEnd
 					for tri2 in allTrisLeft:
 						if tri2 != tri and svIdx in tri2:
 							break
 					else:
 						# svIdx is only used in this tri (of the remaining ones)
-						wgt += 200 if svIdx in svindices else 100
+						# double the bonus if the vert is from the start or end set
+						wgt += wtLastTri * (1 + 1 * (svIdx in startOrEndSVs))
 				return wgt
 			startTrisWgt = [getTriWeighting(tri, startAlive, allPastSVIndices) for tri in startTris]
 			endTrisWgt = [getTriWeighting(tri, endAlive, limb.ownAndFutureSVIndices) for tri in endTris]
 			# Weight all SVs by the total score of all remaining tris they
 			# contribute to, plus some other stuff
-			def getSVWeighting(svIdx, tris, triswgt, alive, otheralive):
+			def getSVWeighting(svIdx, tris, triswgt, alive, otheralive, enabled):
 				wgt = sum([triswgt[t] for t in range(len(tris)) if svIdx in tris[t] ])
 				# If the vert is not used by any tris, or already loaded,
-				# really don't load it
-				if wgt == 0 or alive[svIdx]: wgt = -100000
+				# or this dir not enabled, really don't load it
+				if wgt == 0 or alive[svIdx] or not enabled: wgt = -100000
 				# Avoid loading verts which belong to the other end
 				if otheralive[svIdx]: wgt -= 1000
 				return wgt
-			svsStartWgt = [getSVWeighting(svIdx, startTris, startTrisWgt, startAlive, endAlive) for svIdx in range(nsv)]
-			svsEndWgt = [getSVWeighting(svIdx, endTris, endTrisWgt, endAlive, startAlive) for svIdx in range(nsv)]
+			svsStartWgt = [getSVWeighting(svIdx, startTris, startTrisWgt, 
+				startAlive, endAlive, startEnabled) for svIdx in range(nsv)]
+			svsEndWgt = [getSVWeighting(svIdx, endTris, endTrisWgt,
+				endAlive, startAlive, endEnabled) for svIdx in range(nsv)]
 			# Find the best vert to load, with ties to end
 			maxWgt = max(max(svsStartWgt), max(svsEndWgt))
+			assert maxWgt > -100000
 			if maxWgt in svsEndWgt:
 				svIdx = svsEndWgt.index(maxWgt)
 				assert not endAlive[svIdx]
@@ -504,8 +543,10 @@ def ootOptimSeqTrisAndSVLifetimes(opSeq, meshInfo):
 	# Sort svs by first use, just for printing
 	svOrder = []
 	for cmd in opSeq:
-		if cmd[0] == 'svbegin' and cmd[1] not in svOrder:
-			svOrder.append(cmd[1])
+		if cmd[0] == 'tri':
+			for sv in cmd[1]:
+				if sv not in svOrder:
+					svOrder.append(sv)
 	# Print opSeq as sv lifetimes and uses
 	print("\nopSeq\n")
 	for i in range(nsv):
@@ -646,7 +687,7 @@ def ootConvertArmatureToSkeleton(originalArmatureObj, convertTransformMatrix,
 		#	startBoneName = startBoneNames[i]
 		
 		if bpy.context.scene.ootSkeletonExportOptimize:
-			getSplitVerts(meshInfo)
+			getSplitVerts(meshInfo, meshObj.data)
 			meshInfo.limbs = []
 			ootBoneOptimSetup(0, startBoneName, armatureObj, meshObj, meshInfo)
 			ootOptimFinalSetup(meshInfo)
