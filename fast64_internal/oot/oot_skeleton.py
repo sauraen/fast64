@@ -491,21 +491,22 @@ def ootOptimSeqTrisAndSVLifetimes(opSeq, meshInfo):
 				break
 			# Weight allTrisLeft based on:
 			def getTriWeighting(tri, alive, startOrEndSVs):
-				wtLoaded = 10 # how many verts of theirs are already loaded
-				wtLastTri = 21 # how many verts this is the last tri which uses
-				wtStartOrEnd = 31 # how many verts this tri uses which are from the start or end set
-				wgt = 1 # free bonus for all tris a vert is in
-				wgt += wtLoaded * sum([alive[tri[i]] * 1 for i in range(3)])
+				wgt = 1 # bonus for all verts in a tri so not 0
 				for svIdx in tri:
-					if svIdx in startOrEndSVs:
-						wgt += wtStartOrEnd
+					isLoaded = alive[svIdx]
+					isStartOrEnd = svIdx in startOrEndSVs
+					isOnlyUse = False # svIdx is only used in this tri (of the remaining ones)
 					for tri2 in allTrisLeft:
 						if tri2 != tri and svIdx in tri2:
 							break
 					else:
-						# svIdx is only used in this tri (of the remaining ones)
-						# double the bonus if the vert is from the start or end set
-						wgt += wtLastTri * (1 + 1 * (svIdx in startOrEndSVs))
+						isOnlyUse = True
+					if isStartOrEnd:
+						wgt += 100 if isOnlyUse else 40
+					elif isLoaded:
+						wgt += 15 if isOnlyUse else 5
+					else:
+						wgt += 1 if isOnlyUse else 0
 				return wgt
 			startTrisWgt = [getTriWeighting(tri, startAlive, allPastSVIndices) for tri in startTris]
 			endTrisWgt = [getTriWeighting(tri, endAlive, limb.ownAndFutureSVIndices) for tri in endTris]
@@ -540,6 +541,28 @@ def ootOptimSeqTrisAndSVLifetimes(opSeq, meshInfo):
 				startPtr += 1
 				endPtr += 1
 				startAlive[svIdx] = True
+	# Combine beginnings and endings between each pair of tri commands
+	ptr = 0
+	beginnings = set()
+	endings = set()
+	while ptr < len(opSeq):
+		cmd = opSeq[ptr]
+		if cmd[0] == 'svbegin':
+			beginnings.add(cmd[1])
+			del opSeq[ptr]
+		elif cmd[0] == 'svend':
+			endings.add(cmd[1])
+			del opSeq[ptr]
+		else:
+			if len(endings) > 0:
+				opSeq.insert(ptr, ('svendset', endings))
+				endings = set()
+				ptr += 1
+			if len(beginnings) > 0:
+				opSeq.insert(ptr, ('svbeginset', beginnings))
+				beginnings = set()
+				ptr += 1
+			ptr += 1
 	# Sort svs by first use, just for printing
 	svOrder = []
 	for cmd in opSeq:
@@ -561,14 +584,14 @@ def ootOptimSeqTrisAndSVLifetimes(opSeq, meshInfo):
 				print("E{}".format(cmd[1]), end="")
 			elif cmd[0] == 'matl':
 				print("M{}".format(cmd[1]), end="")
-			elif cmd[0] == 'svbegin':
-				if cmd[1] == svIdx:
+			elif cmd[0] == 'svbeginset':
+				if svIdx in cmd[1]:
 					print("[", end="")
 					loaded = True
 				else:
 					print(ch, end="")
-			elif cmd[0] == 'svend':
-				if cmd[1] == svIdx:
+			elif cmd[0] == 'svendset':
+				if svIdx in cmd[1]:
 					print("]", end="")
 					loaded = False
 				else:
