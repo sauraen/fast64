@@ -235,7 +235,8 @@ class LimbInfo:
 		self.ownOnlySVIndices = set()
 		self.ownAndFutureSVIndices = set()
 		self.futureOnlySVIndices = set()
-		self.pastSVIndices = {} # pastLimbIndex : set of SVIndices
+		self.pastUsedSVIndices = {} # pastLimbIndex : set of SVIndices
+		self.pastUnusedSVIndices = {} # pastLimbIndex : set of SVIndices
 
 class SplitVert:
 	# This represents one RCP vtx, which is different from both a Blender vertex
@@ -290,14 +291,34 @@ def ootOptimFinalSetup(meshInfo):
 					if limbIndex == sv.limbIndex:
 						limbInfo.ownOnlySVIndices.add(svIdx)
 					else:
-						if sv.limbIndex not in limbInfo.pastSVIndices:
-							limbInfo.pastSVIndices[sv.limbIndex] = set()
-						limbInfo.pastSVIndices[sv.limbIndex].add(svIdx)
+						if sv.limbIndex not in limbInfo.pastUsedSVIndices:
+							limbInfo.pastUsedSVIndices[sv.limbIndex] = set()
+						limbInfo.pastUsedSVIndices[sv.limbIndex].add(svIdx)
 						meshInfo.limbs[sv.limbIndex].futureOnlySVIndices.add(svIdx)
 	for limbInfo in meshInfo.limbs:
 		limbInfo.ownAndFutureSVIndices = limbInfo.ownOnlySVIndices & limbInfo.futureOnlySVIndices
 		limbInfo.ownOnlySVIndices = limbInfo.ownOnlySVIndices - limbInfo.ownAndFutureSVIndices
 		limbInfo.futureOnlySVIndices = limbInfo.futureOnlySVIndices - limbInfo.ownAndFutureSVIndices
+	# Separate SV indices which were used in tris of the past limb, from those
+	# which have the transform of the past limb but not used in any of its tris.
+	for limbInfo in meshInfo.limbs:
+		limbInfo.pastUsedSVIndices = dict(sorted(limbInfo.pastUsedSVIndices.items()))
+		for pastLimbIndex in limbInfo.pastUsedSVIndices.keys():
+			newUsed = []
+			newUnused = []
+			for svIdx in limbInfo.pastUsedSVIndices[pastLimbIndex]:
+				if svIdx in meshInfo.limbs[pastLimbIndex].ownAndFutureSVIndices:
+					newUsed.append(svIdx)
+				elif svIdx in meshInfo.limbs[pastLimbIndex].futureOnlySVIndices:
+					newUnused.append(svIdx)
+				else:
+					raise RuntimeError('Internal error in ootOptimFinalSetup')
+			if len(newUsed) > 0:
+				limbInfo.pastUsedSVIndices[pastLimbIndex] = newUsed
+			else:
+				del limbInfo.pastUsedSVIndices[pastLimbIndex]
+			if len(newUnused) > 0:
+				limbInfo.pastUnusedSVIndices[pastLimbIndex] = newUnused
 
 def isInMaterial(meshInfo, svIdx, matlIndex, limbIndex):
 	# Does this split vertex belong to any tris of the given limb and given material?
@@ -335,8 +356,8 @@ def getBestStartMaterial(meshInfo, matlChoices, limbIndex):
 	carriedOverVerts = {}
 	for o in okayStartChoices:
 		c = 0
-		if limbIndex-1 in meshInfo.limbs[limbIndex].pastSVIndices:
-			sharedSVs = meshInfo.limbs[limbIndex].pastSVIndices[limbIndex-1]
+		if limbIndex-1 in meshInfo.limbs[limbIndex].pastUsedSVIndices:
+			sharedSVs = meshInfo.limbs[limbIndex].pastUsedSVIndices[limbIndex-1]
 			for svIdx in sharedSVs:
 				if isInMaterial(meshInfo, svIdx, o, limbIndex-1):
 					c += 1
@@ -394,7 +415,8 @@ def ootOptimSeqTrisAndSVLifetimes(opSeq, meshInfo):
 		for svIdx in limb.futureOnlySVIndices:
 			opSeq.insert(endPtr, ('svbegin', svIdx))
 		# Get SV alive bools at each end
-		allPastSVIndices = set([svIdx for svList in limb.pastSVIndices.values() for svIdx in svList])
+		allPastSVIndices = set([svIdx for svList in limb.pastUsedSVIndices.values() for svIdx in svList]
+			+ [svIdx for svList in limb.pastUnusedSVIndices.values() for svIdx in svList])
 		print("Past alive:" , allPastSVIndices)
 		print("Own and future:", limb.ownAndFutureSVIndices)
 		startAlive = [svIdx in allPastSVIndices for svIdx in range(nsv)]
@@ -490,26 +512,45 @@ def ootOptimSeqTrisAndSVLifetimes(opSeq, meshInfo):
 			if limbDone:
 				break
 			# Weight allTrisLeft based on:
-			def getTriWeighting(tri, alive, startOrEndSVs):
+			def getTriWeighting(tri, alive, isPast):
 				wgt = 1 # bonus for all verts in a tri so not 0
 				for svIdx in tri:
 					isLoaded = alive[svIdx]
-					isStartOrEnd = svIdx in startOrEndSVs
 					isOnlyUse = False # svIdx is only used in this tri (of the remaining ones)
 					for tri2 in allTrisLeft:
 						if tri2 != tri and svIdx in tri2:
 							break
 					else:
 						isOnlyUse = True
-					if isStartOrEnd:
+					if not isPast and svIdx in limb.ownAndFutureSVIndices:
 						wgt += 100 if isOnlyUse else 40
+					elif isPast and svIdx in allPastSVIndices:
+						# Weight more if used more recently, and also weight
+						# more if actually used by the past limb
+						possibleWgt = 40
+						actualWgt = -1
+						for pastLimbSVIndices in limb.pastUnusedSVIndices.values():
+							if svIdx in pastLimbSVIndices:
+								actualWgt = possibleWgt
+								break
+							possibleWgt += 10
+						possibleWgt = 80
+						for pastLimbSVIndices in limb.pastUsedSVIndices.values():
+							if svIdx in pastLimbSVIndices and actualWgt < 0:
+								actualWgt = possibleWgt
+								break
+							possibleWgt += 10
+						assert actualWgt > 0
+						if isOnlyUse:
+							actualWgt *= 2
+						wgt += actualWgt
 					elif isLoaded:
 						wgt += 15 if isOnlyUse else 5
 					else:
 						wgt += 1 if isOnlyUse else 0
 				return wgt
-			startTrisWgt = [getTriWeighting(tri, startAlive, allPastSVIndices) for tri in startTris]
-			endTrisWgt = [getTriWeighting(tri, endAlive, limb.ownAndFutureSVIndices) for tri in endTris]
+			startTrisWgt = [getTriWeighting(tri, startAlive, True) for tri in startTris]
+			endTrisWgt = [getTriWeighting(tri, endAlive, False) for tri in endTris]
 			# Weight all SVs by the total score of all remaining tris they
 			# contribute to, plus some other stuff
 			def getSVWeighting(svIdx, tris, triswgt, alive, otheralive, enabled):
@@ -608,6 +649,41 @@ def ootOptimSeqTrisAndSVLifetimes(opSeq, meshInfo):
 				print("?", end="")
 		print("")
 	print("\n")
+	
+def getSeqCost(opSeq):
+	# Return the estimated cost in cycles to run this sequence on the RSP.
+	# Tris are considered free, since the same number of tris have to be drawn
+	# regardless of which path is taken. Also materials are ignored since it is
+	# assumed the material order has already been decided. So basically what is
+	# counted is vertex loads (including the DMA and the transformations), and
+	# matrix loads. The matrix load done by the SkelAnime system at the 
+	# beginning of each limb is considered free.
+	# 
+	# Costs
+	# 
+	# The average number of cycles from having called through returning from
+	# a RSP dma_read_write call, minus the actual cycles consumed transferring data. 
+	# For now, completely guessed.
+	dmaOverheadCost = 100
+	# The number of cycles to DMA transfer the data of one vertex. RDRAM transfers
+	# 8 bytes per cycle.
+	dmaVertexCost = 2
+	# The number of cycles to DMA transfer the data of a (modelview) matrix.
+	# RDRAM transfers 8 bytes per cycle, and a matrix is 0x40 bytes.
+	dmaMatrixCost = 8
+	# The number of cycles to execute RSP code (not counting dma_read_write or
+	# the DMA itself) for gsSPMatrix on the codepath of G_MTX_LOAD.
+	# Estimated from reading code and accounting for pipeline latencies; probably
+	# quite close but not exact.
+	gsSPMatrixCodeCost = 16 + 8
+	# The number of cycles to update the MVP matrix. This is marked dirty after
+	# each matrix load and updated on the next vertex load, presumably so that
+	# if both modelview and projection matrices are to be loaded, it doesn't
+	# bother recomputing between those two loads. Since we only modify modelview,
+	# we can just count this as another cost to loading a matrix.
+	# Estimated from reading code and accounting for pipeline latencies; probably
+	# quite close but not exact.
+	calculateMVPCost = 6 + TODO
 	
 
 def ootDuplicateArmature(originalArmatureObj):
