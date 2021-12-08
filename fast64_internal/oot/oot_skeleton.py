@@ -13,7 +13,7 @@ from ..f3d.f3d_material import TextureProperty, tmemUsageUI
 from .oot_f3d_writer import *
 
 # for debugging only
-from pprint import pprint
+#from pprint import pprint
 
 ootEnumBoneType = [
 	("Default", "Default", "Default"),
@@ -232,11 +232,16 @@ class LimbInfo:
 		if isinstance(self.matlsFaces, dict):
 			for matlIndex, faceList in self.matlsFaces.items():
 				self.matlsSplitVertTris[matlIndex] = getSplitVertTris(meshInfo, faceList, meshObj.data)
-		self.ownOnlySVIndices = set()
-		self.ownAndFutureSVIndices = set()
-		self.futureOnlySVIndices = set()
-		self.pastUsedSVIndices = {} # pastLimbIndex : set of SVIndices
-		self.pastUnusedSVIndices = {} # pastLimbIndex : set of SVIndices
+		# SVIs = Split Vertex Indices
+		self.allPastSVIs = set()
+		self.allOwnOnlySVIs = set()
+		self.allOwnAndFutureSVIs = set()
+		self.allFutureOnlySVIs = set()
+		# These four: past or future limbIndex : set of SVIndices
+		self.pastUsedSVIsByLimb = {}
+		self.pastUnusedSVIsByLimb = {}
+		self.ownAndFutureSVIsByLimb = {}
+		self.futureOnlySVIsByLimb = {}
 
 class SplitVert:
 	# This represents one RCP vtx, which is different from both a Blender vertex
@@ -289,36 +294,56 @@ def ootOptimFinalSetup(meshInfo):
 				for svIdx in face:
 					sv = meshInfo.splitVerts[svIdx]
 					if limbIndex == sv.limbIndex:
-						limbInfo.ownOnlySVIndices.add(svIdx)
+						limbInfo.allOwnOnlySVIs.add(svIdx)
 					else:
-						if sv.limbIndex not in limbInfo.pastUsedSVIndices:
-							limbInfo.pastUsedSVIndices[sv.limbIndex] = set()
-						limbInfo.pastUsedSVIndices[sv.limbIndex].add(svIdx)
-						meshInfo.limbs[sv.limbIndex].futureOnlySVIndices.add(svIdx)
-	for limbInfo in meshInfo.limbs:
-		limbInfo.ownAndFutureSVIndices = limbInfo.ownOnlySVIndices & limbInfo.futureOnlySVIndices
-		limbInfo.ownOnlySVIndices = limbInfo.ownOnlySVIndices - limbInfo.ownAndFutureSVIndices
-		limbInfo.futureOnlySVIndices = limbInfo.futureOnlySVIndices - limbInfo.ownAndFutureSVIndices
+						limbInfo.allPastSVIs.add(svIdx)
+						if sv.limbIndex not in limbInfo.pastUsedSVIsByLimb:
+							limbInfo.pastUsedSVIsByLimb[sv.limbIndex] = set()
+						limbInfo.pastUsedSVIsByLimb[sv.limbIndex].add(svIdx)
+						meshInfo.limbs[sv.limbIndex].allFutureOnlySVIs.add(svIdx)
+	for li in meshInfo.limbs:
+		li.allOwnAndFutureSVIs = li.allOwnOnlySVIs & li.allFutureOnlySVIs
+		li.allOwnOnlySVIs = li.allOwnOnlySVIs - li.allOwnAndFutureSVIs
+		li.allFutureOnlySVIs = li.allFutureOnlySVIs - li.allOwnAndFutureSVIs
 	# Separate SV indices which were used in tris of the past limb, from those
 	# which have the transform of the past limb but not used in any of its tris.
 	for limbInfo in meshInfo.limbs:
-		limbInfo.pastUsedSVIndices = dict(sorted(limbInfo.pastUsedSVIndices.items()))
-		for pastLimbIndex in limbInfo.pastUsedSVIndices.keys():
+		# Sort in descending order of limbs (closest to present first)
+		limbInfo.pastUsedSVIsByLimb = dict(sorted(limbInfo.pastUsedSVIsByLimb.items(), reverse=True))
+		for pastLimbIndex in limbInfo.pastUsedSVIsByLimb.keys():
 			newUsed = []
 			newUnused = []
-			for svIdx in limbInfo.pastUsedSVIndices[pastLimbIndex]:
-				if svIdx in meshInfo.limbs[pastLimbIndex].ownAndFutureSVIndices:
+			for svIdx in limbInfo.pastUsedSVIsByLimb[pastLimbIndex]:
+				if svIdx in meshInfo.limbs[pastLimbIndex].allOwnAndFutureSVIs:
 					newUsed.append(svIdx)
-				elif svIdx in meshInfo.limbs[pastLimbIndex].futureOnlySVIndices:
+				elif svIdx in meshInfo.limbs[pastLimbIndex].allFutureOnlySVIs:
 					newUnused.append(svIdx)
 				else:
 					raise RuntimeError('Internal error in ootOptimFinalSetup')
 			if len(newUsed) > 0:
-				limbInfo.pastUsedSVIndices[pastLimbIndex] = newUsed
+				limbInfo.pastUsedSVIsByLimb[pastLimbIndex] = newUsed
 			else:
-				del limbInfo.pastUsedSVIndices[pastLimbIndex]
+				del limbInfo.pastUsedSVIsByLimb[pastLimbIndex]
+			# These are added in order so should be sorted
 			if len(newUnused) > 0:
-				limbInfo.pastUnusedSVIndices[pastLimbIndex] = newUnused
+				limbInfo.pastUnusedSVIsByLimb[pastLimbIndex] = newUnused
+	# Set up ownAndFutureSVIsByLimb and futureOnlySVIsByLimb as the symmetric
+	# data structures to pastUsedSVIsByLimb and pastUnusedSVIsByLimb.
+	for limbIndex, limbInfo in enumerate(meshInfo.limbs):
+		for pastLimbIndex, SVIs in limbInfo.pastUsedSVIsByLimb.items():
+			meshInfo.limbs[pastLimbIndex].ownAndFutureSVIsByLimb[limbIndex] = SVIs
+		for pastLimbIndex, SVIs in limbInfo.pastUnusedSVIsByLimb.items():
+			meshInfo.limbs[pastLimbIndex].futureOnlySVIsByLimb[limbIndex] = SVIs
+	for limbInfo in meshInfo.limbs:
+		# Sort in ascending order of limbs (closest to present first)
+		limbInfo.ownAndFutureSVIsByLimb = dict(sorted(limbInfo.ownAndFutureSVIsByLimb.items()))
+		limbInfo.futureOnlySVIsByLimb = dict(sorted(limbInfo.futureOnlySVIsByLimb.items()))
+	for limbIndex, limbInfo in enumerate(meshInfo.limbs):
+		print('Limb {}'.format(limbIndex))
+		print('pastUsedSVIsByLimb', limbInfo.pastUsedSVIsByLimb)
+		print('pastUnusedSVIsByLimb', limbInfo.pastUnusedSVIsByLimb)
+		print('ownAndFutureSVIsByLimb', limbInfo.ownAndFutureSVIsByLimb)
+		print('futureOnlySVIsByLimb', limbInfo.futureOnlySVIsByLimb)
 
 def isInMaterial(meshInfo, svIdx, matlIndex, limbIndex):
 	# Does this split vertex belong to any tris of the given limb and given material?
@@ -356,8 +381,8 @@ def getBestStartMaterial(meshInfo, matlChoices, limbIndex):
 	carriedOverVerts = {}
 	for o in okayStartChoices:
 		c = 0
-		if limbIndex-1 in meshInfo.limbs[limbIndex].pastUsedSVIndices:
-			sharedSVs = meshInfo.limbs[limbIndex].pastUsedSVIndices[limbIndex-1]
+		if limbIndex-1 in meshInfo.limbs[limbIndex].pastUsedSVIsByLimb:
+			sharedSVs = meshInfo.limbs[limbIndex].pastUsedSVIsByLimb[limbIndex-1]
 			for svIdx in sharedSVs:
 				if isInMaterial(meshInfo, svIdx, o, limbIndex-1):
 					c += 1
@@ -384,13 +409,12 @@ def ootOptimSeqMaterials(opSeq, meshInfo):
 			ownMatls.remove(curMatl)
 			opSeq.append(('trilist', meshInfo.limbs[limbIndex].matlsSplitVertTris[curMatl]))
 		opSeq.append(('limbend', limbIndex))
-	pprint(opSeq)
+	#pprint(opSeq)
 
 def ootOptimSeqTrisAndSVLifetimes(opSeq, meshInfo):
 	# Compute an attempted optimal order of drawing triangles, and in conjunction,
 	# split vertex lifetimes. At this stage, it is assumed that DMEM size is
-	# unlimited, that there is no penalty for loading verts one at a time,
-	# and no SVs are kept alive through a limb without being used.
+	# unlimited and that there is no penalty for loading verts one at a time.
 	# Later steps fix these assumptions.
 	nsv = len(meshInfo.splitVerts)
 	for limbIndex, limb in enumerate(meshInfo.limbs):
@@ -410,21 +434,19 @@ def ootOptimSeqTrisAndSVLifetimes(opSeq, meshInfo):
 		origStartPtr = startPtr
 		origEndPtr = endPtr
 		# Load future only verts
-		if len(limb.futureOnlySVIndices) > 0:
-			print("Future only:", limb.futureOnlySVIndices)
-		for svIdx in limb.futureOnlySVIndices:
+		#if len(limb.allFutureOnlySVIs) > 0:
+		#	print("Future only:", limb.allFutureOnlySVIs)
+		for svIdx in limb.allFutureOnlySVIs:
 			opSeq.insert(endPtr, ('svbegin', svIdx))
 		# Get SV alive bools at each end
-		allPastSVIndices = set([svIdx for svList in limb.pastUsedSVIndices.values() for svIdx in svList]
-			+ [svIdx for svList in limb.pastUnusedSVIndices.values() for svIdx in svList])
-		print("Past alive:" , allPastSVIndices)
-		print("Own and future:", limb.ownAndFutureSVIndices)
-		startAlive = [svIdx in allPastSVIndices for svIdx in range(nsv)]
-		endAlive = [svIdx in limb.ownAndFutureSVIndices for svIdx in range(nsv)]
+		#print("Past alive:" , limb.allPastSVIs)
+		#print("Own and future:", limb.allOwnAndFutureSVIs)
+		startAlive = [svIdx in limb.allPastSVIs for svIdx in range(nsv)]
+		endAlive = [svIdx in limb.allOwnAndFutureSVIs for svIdx in range(nsv)]
 		# Init remaining items
 		allTrisLeft = [tri for triList in limb.matlsSplitVertTris.values() for tri in triList]
-		pastSVsLeft = allPastSVIndices.copy()
-		futureSVsLeft = limb.ownAndFutureSVIndices.copy()
+		pastSVsLeft = limb.allPastSVIs.copy()
+		futureSVsLeft = limb.allOwnAndFutureSVIs.copy()
 		startEnabled = True
 		endEnabled = True
 		# Loop
@@ -439,7 +461,7 @@ def ootOptimSeqTrisAndSVLifetimes(opSeq, meshInfo):
 				# Insert all tris possible with current verts
 				for tri in reversed(startTris):
 					if all(startAlive[tri[i]] for i in range(3)):
-						print("At start, adding tri ", tri)
+						#print("At start, adding tri ", tri)
 						opSeq.insert(startPtr, ('tri', tri))
 						startPtr += 1
 						endPtr += 1
@@ -447,11 +469,11 @@ def ootOptimSeqTrisAndSVLifetimes(opSeq, meshInfo):
 						allTrisLeft.remove(tri)
 				for tri in reversed(endTris):
 					if all(endAlive[tri[i]] for i in range(3)):
-						print("At end, adding tri ", tri)
+						#print("At end, adding tri ", tri)
 						opSeq.insert(endPtr, ('tri', tri))
 						endTris.remove(tri)
 						allTrisLeft.remove(tri)
-				print("{} tris left".format(len(allTrisLeft)))
+				#print("{} tris left".format(len(allTrisLeft)))
 				#print("startAlive", [i for i in range(nsv) if startAlive[i]])
 				# End or begin lifetimes for all verts which are no longer needed
 				for svIdx in range(nsv):
@@ -464,7 +486,7 @@ def ootOptimSeqTrisAndSVLifetimes(opSeq, meshInfo):
 							break
 					else:
 						if startAlive[svIdx]:
-							print("Done with sv {} at start".format(svIdx))
+							#print("Done with sv {} at start".format(svIdx))
 							startAlive[svIdx] = False
 							pastSVsLeft.discard(svIdx)
 							opSeq.insert(startPtr, ('svend', svIdx))
@@ -472,7 +494,7 @@ def ootOptimSeqTrisAndSVLifetimes(opSeq, meshInfo):
 							endPtr += 1
 						else:
 							assert endAlive[svIdx]
-							print("Done with sv {} at end".format(svIdx))
+							#print("Done with sv {} at end".format(svIdx))
 							endAlive[svIdx] = False
 							futureSVsLeft.discard(svIdx)
 							opSeq.insert(endPtr, ('svbegin', svIdx))
@@ -480,15 +502,15 @@ def ootOptimSeqTrisAndSVLifetimes(opSeq, meshInfo):
 				# otherwise continue traversing in the last direction.
 				if startEnabled and endEnabled:
 					if len(pastSVsLeft) == 0:
-						print("Disabling start traversal")
+						#print("Disabling start traversal")
 						startEnabled = False
 					elif len(futureSVsLeft) == 0:
-						print("Disabling end traversal")
+						#print("Disabling end traversal")
 						endEnabled = False
 				# Update pointers and possibly exit
 				gotNewTriLists = False
 				if len(startTris) == 0:
-					print("Done with trilist at start")
+					#print("Done with trilist at start")
 					gotNewTriLists = True
 					del opSeq[startPtr]
 					endPtr -= 1
@@ -498,7 +520,7 @@ def ootOptimSeqTrisAndSVLifetimes(opSeq, meshInfo):
 						limbDone = True
 						break
 				if len(endTris) == 0:
-					print("Done with trilist at end")
+					#print("Done with trilist at end")
 					gotNewTriLists = True
 					del opSeq[endPtr-1]
 					endPtr -= 1
@@ -512,7 +534,7 @@ def ootOptimSeqTrisAndSVLifetimes(opSeq, meshInfo):
 			if limbDone:
 				break
 			# Weight allTrisLeft based on:
-			def getTriWeighting(tri, alive, isPast):
+			def getTriWeighting(tri, alive, allSet, usedDict, unusedDict):
 				wgt = 1 # bonus for all verts in a tri so not 0
 				for svIdx in tri:
 					isLoaded = alive[svIdx]
@@ -522,24 +544,23 @@ def ootOptimSeqTrisAndSVLifetimes(opSeq, meshInfo):
 							break
 					else:
 						isOnlyUse = True
-					if not isPast and svIdx in limb.ownAndFutureSVIndices:
-						wgt += 100 if isOnlyUse else 40
-					elif isPast and svIdx in allPastSVIndices:
-						# Weight more if used more recently, and also weight
-						# more if actually used by the past limb
+					if svIdx in allSet:
+						# Weight more if used closer to the present, and also
+						# weight more if actually used by the past/present limb
 						possibleWgt = 40
 						actualWgt = -1
-						for pastLimbSVIndices in limb.pastUnusedSVIndices.values():
-							if svIdx in pastLimbSVIndices:
+						for SVIs in reversed(list(unusedDict.values())):
+							if svIdx in SVIs:
 								actualWgt = possibleWgt
 								break
-							possibleWgt += 10
+							possibleWgt += 50
 						possibleWgt = 80
-						for pastLimbSVIndices in limb.pastUsedSVIndices.values():
-							if svIdx in pastLimbSVIndices and actualWgt < 0:
+						for SVIs in reversed(list(usedDict.values())):
+							if svIdx in SVIs:
+								assert actualWgt < 0 # should be nothing both used and unused
 								actualWgt = possibleWgt
 								break
-							possibleWgt += 10
+							possibleWgt += 90
 						assert actualWgt > 0
 						if isOnlyUse:
 							actualWgt *= 2
@@ -549,8 +570,12 @@ def ootOptimSeqTrisAndSVLifetimes(opSeq, meshInfo):
 					else:
 						wgt += 1 if isOnlyUse else 0
 				return wgt
-			startTrisWgt = [getTriWeighting(tri, startAlive, True) for tri in startTris]
-			endTrisWgt = [getTriWeighting(tri, endAlive, False) for tri in endTris]
+			startTrisWgt = [getTriWeighting(tri, startAlive, limb.allPastSVIs, 
+				limb.pastUsedSVIsByLimb, limb.pastUnusedSVIsByLimb) for tri in startTris]
+			# Note: current tris being weighted won't ever include SVs from
+			# limb.allFutureOnlySVIs / limb.futureOnlySVsByLimb
+			endTrisWgt = [getTriWeighting(tri, endAlive, limb.allOwnAndFutureSVIs,
+				limb.ownAndFutureSVIsByLimb, {}) for tri in endTris]
 			# Weight all SVs by the total score of all remaining tris they
 			# contribute to, plus some other stuff
 			def getSVWeighting(svIdx, tris, triswgt, alive, otheralive, enabled):
@@ -571,17 +596,18 @@ def ootOptimSeqTrisAndSVLifetimes(opSeq, meshInfo):
 			if maxWgt in svsEndWgt:
 				svIdx = svsEndWgt.index(maxWgt)
 				assert not endAlive[svIdx]
-				print("Adding sv {} to end with wgt {}".format(svIdx, maxWgt))
+				#print("Adding sv {} to end with wgt {}".format(svIdx, maxWgt))
 				opSeq.insert(endPtr, ('svend', svIdx))
 				endAlive[svIdx] = True
 			else:
 				svIdx = svsStartWgt.index(maxWgt)
 				assert not startAlive[svIdx]
-				print("Adding sv {} to start with wgt {}".format(svIdx, maxWgt))
+				#print("Adding sv {} to start with wgt {}".format(svIdx, maxWgt))
 				opSeq.insert(startPtr, ('svbegin', svIdx))
 				startPtr += 1
 				endPtr += 1
 				startAlive[svIdx] = True
+	'''
 	# Combine beginnings and endings between each pair of tri commands
 	ptr = 0
 	beginnings = set()
@@ -604,10 +630,17 @@ def ootOptimSeqTrisAndSVLifetimes(opSeq, meshInfo):
 				beginnings = set()
 				ptr += 1
 			ptr += 1
-	# Sort svs by first use, just for printing
+	'''
+	# Sort svs by end, just for printing
 	svOrder = []
 	for cmd in opSeq:
-		if cmd[0] == 'tri':
+		# if cmd[0] == 'tri':
+		# 	for sv in cmd[1]:
+		# 		if sv not in svOrder:
+		# 			svOrder.append(sv)
+		if cmd[0] == 'svend' and cmd[1] not in svOrder:
+			svOrder.append(cmd[1])
+		elif cmd[0] == 'svendset':
 			for sv in cmd[1]:
 				if sv not in svOrder:
 					svOrder.append(sv)
@@ -637,6 +670,18 @@ def ootOptimSeqTrisAndSVLifetimes(opSeq, meshInfo):
 					loaded = False
 				else:
 					print(ch, end="")
+			elif cmd[0] == 'svbegin':
+				if cmd[1] == svIdx:
+					print("[", end="")
+					loaded = True
+				else:
+					print(ch, end="")
+			elif cmd[0] == 'svend':
+				if cmd[1] == svIdx:
+					print("]", end="")
+					loaded = False
+				else:
+					print(ch, end="")
 			elif cmd[0] == 'tri':
 				idxs = [svOrder.index(v) for v in cmd[1]]
 				if svIdx in cmd[1]:
@@ -650,7 +695,7 @@ def ootOptimSeqTrisAndSVLifetimes(opSeq, meshInfo):
 		print("")
 	print("\n")
 	
-def getSeqCost(opSeq):
+def ootOptimComputeSeqCost(opSeq):
 	# Return the estimated cost in cycles to run this sequence on the RSP.
 	# Tris are considered free, since the same number of tris have to be drawn
 	# regardless of which path is taken. Also materials are ignored since it is
@@ -684,6 +729,9 @@ def getSeqCost(opSeq):
 	# Estimated from reading code and accounting for pipeline latencies; probably
 	# quite close but not exact.
 	calculateMVPCost = 6 + TODO
+	
+def ootOptimSeqAssignVertsToSlots(limbOpSeq, nSlots, minSlot, endState):
+	assert len(endState) == nSlots
 	
 
 def ootDuplicateArmature(originalArmatureObj):
