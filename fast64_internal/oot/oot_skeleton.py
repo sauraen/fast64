@@ -237,7 +237,8 @@ class LimbInfo:
 		self.allOwnOnlySVIs = set()
 		self.allOwnAndFutureSVIs = set()
 		self.allFutureOnlySVIs = set()
-		# These four: past or future limbIndex : set of SVIndices
+		# These four: past or future limbIndex : list of SVIndices
+		# (They're lists because they get sorted later)
 		self.pastUsedSVIsByLimb = {}
 		self.pastUnusedSVIsByLimb = {}
 		self.ownAndFutureSVIsByLimb = {}
@@ -411,13 +412,34 @@ def ootOptimSeqMaterials(opSeq, meshInfo):
 		opSeq.append(('limbend', limbIndex))
 	#pprint(opSeq)
 
+def ootOptimGetSVEndOrder(opSeq, limbIndex):
+	# Returns a dict svIdx : endOrderIndex, where endOrderIndex is an integer
+	# representing the order in which the SV lifetimes end. 0 is the first SV
+	# to end, some larger number is the last. The dict is sorted by endOrderIndex.
+	ptr = 0
+	while opSeq[ptr] != ('limbstart', limbIndex):
+		ptr += 1
+	ptr += 1
+	order = 0
+	ret = {}
+	while opSeq[ptr] != ('limbend', limbIndex):
+		if opSeq[ptr][0] == 'svend':
+			svIdx = opSeq[ptr][1]
+			assert svIdx not in ret
+			ret[svIdx] = order
+			order += 1
+		elif opSeq[ptr][0] == 'svendset':
+			raise RuntimeError('Internal error, should not have SVs in sets at this point')
+		ptr += 1
+	return ret
+
 def ootOptimSeqTrisAndSVLifetimes(opSeq, meshInfo):
 	# Compute an attempted optimal order of drawing triangles, and in conjunction,
 	# split vertex lifetimes. At this stage, it is assumed that DMEM size is
 	# unlimited and that there is no penalty for loading verts one at a time.
 	# Later steps fix these assumptions.
 	nsv = len(meshInfo.splitVerts)
-	for limbIndex, limb in enumerate(meshInfo.limbs):
+	for limbIndex, limb in reversed(list(enumerate(meshInfo.limbs))):
 		print("Limb {}".format(limbIndex))
 		if not isinstance(limb.matlsFaces, dict):
 			continue
@@ -438,6 +460,15 @@ def ootOptimSeqTrisAndSVLifetimes(opSeq, meshInfo):
 		#	print("Future only:", limb.allFutureOnlySVIs)
 		for svIdx in limb.allFutureOnlySVIs:
 			opSeq.insert(endPtr, ('svbegin', svIdx))
+		# Sort each list in ownAndFutureSVIsByLimb by end order
+		ownAndFutureSVIsPriority = []
+		for futureLimbIndex in limb.ownAndFutureSVIsByLimb.keys():
+			l = limb.ownAndFutureSVIsByLimb[futureLimbIndex]
+			d = ootOptimGetSVEndOrder(opSeq, futureLimbIndex)
+			l = sorted(l, key = lambda svIdx: d[svIdx])
+			print("Limb {} -> {}: ".format(limbIndex, futureLimbIndex), l)
+			#limb.ownAndFutureSVIsByLimb[futureLimbIndex] = l
+			ownAndFutureSVIsPriority.extend(l)
 		# Get SV alive bools at each end
 		#print("Past alive:" , limb.allPastSVIs)
 		#print("Own and future:", limb.allOwnAndFutureSVIs)
@@ -497,6 +528,8 @@ def ootOptimSeqTrisAndSVLifetimes(opSeq, meshInfo):
 							#print("Done with sv {} at end".format(svIdx))
 							endAlive[svIdx] = False
 							futureSVsLeft.discard(svIdx)
+							if svIdx in ownAndFutureSVIsPriority:
+								ownAndFutureSVIsPriority.remove(svIdx)
 							opSeq.insert(endPtr, ('svbegin', svIdx))
 				# Only traverse in both directions if there's past or future SVs,
 				# otherwise continue traversing in the last direction.
@@ -533,8 +566,38 @@ def ootOptimSeqTrisAndSVLifetimes(opSeq, meshInfo):
 					break
 			if limbDone:
 				break
+			def getStartSVWeighting(svIdx):
+				# Weight more if used closer to the present, and also
+				# weight more if actually used by the past/present limb
+				wgt = 40
+				for SVIs in reversed(list(limb.pastUnusedSVIsByLimb.values())):
+					if svIdx in SVIs:
+						return wgt
+					wgt += 50
+				wgt = 80
+				for SVIs in reversed(list(limb.pastUsedSVIsByLimb.values())):
+					if svIdx in SVIs:
+						return wgt
+						break
+					wgt += 90
+				raise RuntimeError('Internal error in getStartSVWeighting')
+			def getEndSVWeighting(svIdx):
+				'''
+				wgt = 40
+				# Weight more than 2x more if used closer to the present, and
+				# weight more for SVs whose ends are sooner in the future limb
+				for SVIs in reversed(list(limb.ownAndFutureSVIsByLimb.values())):
+					for s in reversed(SVIs):
+						if s == svIdx:
+							return wgt
+						wgt += 2
+					wgt = wgt * 2 + 1
+				raise RuntimeError('Internal error in getEndSVWeighting')
+				'''
+				idx = ownAndFutureSVIsPriority.index(svIdx)
+				return 40 + 10000 // ((2 ** idx) * (idx + 1))
 			# Weight allTrisLeft based on:
-			def getTriWeighting(tri, alive, allSet, usedDict, unusedDict):
+			def getTriWeighting(tri, alive, allSet, wtgFunc):
 				wgt = 1 # bonus for all verts in a tri so not 0
 				for svIdx in tri:
 					isLoaded = alive[svIdx]
@@ -545,37 +608,16 @@ def ootOptimSeqTrisAndSVLifetimes(opSeq, meshInfo):
 					else:
 						isOnlyUse = True
 					if svIdx in allSet:
-						# Weight more if used closer to the present, and also
-						# weight more if actually used by the past/present limb
-						possibleWgt = 40
-						actualWgt = -1
-						for SVIs in reversed(list(unusedDict.values())):
-							if svIdx in SVIs:
-								actualWgt = possibleWgt
-								break
-							possibleWgt += 50
-						possibleWgt = 80
-						for SVIs in reversed(list(usedDict.values())):
-							if svIdx in SVIs:
-								assert actualWgt < 0 # should be nothing both used and unused
-								actualWgt = possibleWgt
-								break
-							possibleWgt += 90
-						assert actualWgt > 0
-						if isOnlyUse:
-							actualWgt *= 2
-						wgt += actualWgt
+						wgt += (2 if isOnlyUse else 1) * wtgFunc(svIdx)
 					elif isLoaded:
 						wgt += 15 if isOnlyUse else 5
 					else:
 						wgt += 1 if isOnlyUse else 0
 				return wgt
 			startTrisWgt = [getTriWeighting(tri, startAlive, limb.allPastSVIs, 
-				limb.pastUsedSVIsByLimb, limb.pastUnusedSVIsByLimb) for tri in startTris]
-			# Note: current tris being weighted won't ever include SVs from
-			# limb.allFutureOnlySVIs / limb.futureOnlySVsByLimb
+				getStartSVWeighting) for tri in startTris]
 			endTrisWgt = [getTriWeighting(tri, endAlive, limb.allOwnAndFutureSVIs,
-				limb.ownAndFutureSVIsByLimb, {}) for tri in endTris]
+				getEndSVWeighting) for tri in endTris]
 			# Weight all SVs by the total score of all remaining tris they
 			# contribute to, plus some other stuff
 			def getSVWeighting(svIdx, tris, triswgt, alive, otheralive, enabled):
