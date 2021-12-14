@@ -506,12 +506,7 @@ def ootOptimPrintSeq(opSeq, meshInfo):
 		print("")
 	print("\n")
 
-def ootOptimTriOrder(opSeq, limbIndex, meshInfo, 
-	allStartLive, allOwnAndFutureEndLive, allFutureOnlyEndLive,
-	pastSVIsPriority, ownAndFutureSVIsPriority):
-	# Given a starting and ending state and priority list, compute the "optimal"
-	# order of drawing tris in the limb. opSeq should be composed of trilists.
-	limb = meshInfo.limbs[limbIndex]
+def ootOptimSeqGetLimbBounds(opSeq, limbIndex):
 	# Get bounds of sequence
 	startPtr = 0
 	while opSeq[startPtr] != ('limbstart', limbIndex):
@@ -522,6 +517,15 @@ def ootOptimTriOrder(opSeq, limbIndex, meshInfo,
 	endPtr = len(opSeq) - 1
 	while opSeq[endPtr] != ('limbend', limbIndex):
 		endPtr -= 1
+	return startPtr, endPtr
+
+def ootOptimTriOrder(opSeq, limbIndex, meshInfo, 
+	allStartLive, allOwnAndFutureEndLive, allFutureOnlyEndLive,
+	pastSVIsPriority, ownAndFutureSVIsPriority):
+	# Given a starting and ending state and priority list, compute the "optimal"
+	# order of drawing tris in the limb. opSeq should be composed of trilists.
+	limb = meshInfo.limbs[limbIndex]
+	startPtr, endPtr = ootOptimSeqGetLimbBounds(opSeq, limbIndex)
 	origStartPtr = startPtr
 	origEndPtr = endPtr
 	# Load future only verts
@@ -743,12 +747,12 @@ def ootOptimGetSVEndOrder(opSeq, limbIndex):
 		ptr += 1
 	return ret
 
-def ootOptimSeqTrisAndSVLifetimes(opSeq, meshInfo):
+def ootOptimSeqTrisAndSVLifetimes(opSeqIn, meshInfo):
 	# First pass of computing triangle draw order. The only thing this is used
 	# for is computing ownAndFutureSVIsPriority for each limb, which is used to
 	# determine which verts to carry over between limbs. The actual output
 	# sequence is discarded.
-	opSeq2 = copy.deepcopy(opSeq)
+	opSeq = copy.deepcopy(opSeqIn)
 	for limbIndex, limb in reversed(list(enumerate(meshInfo.limbs))):
 		print("Limb {}".format(limbIndex))
 		if not isinstance(limb.matlsFaces, dict):
@@ -760,18 +764,18 @@ def ootOptimSeqTrisAndSVLifetimes(opSeq, meshInfo):
 		limb.ownAndFutureSVIsPriority = []
 		for futureLimbIndex in limb.ownAndFutureSVIsByLimb.keys():
 			l = limb.ownAndFutureSVIsByLimb[futureLimbIndex]
-			d = ootOptimGetSVEndOrder(opSeq2, futureLimbIndex)
+			d = ootOptimGetSVEndOrder(opSeq, futureLimbIndex)
 			l = sorted(l, key = lambda svIdx: d[svIdx])
 			print("Limb {} -> {}: ".format(limbIndex, futureLimbIndex), l)
 			#limb.ownAndFutureSVIsByLimb[futureLimbIndex] = l
 			limb.ownAndFutureSVIsPriority.extend(l)
 		# Assume all past/future SVs are alive are both ends.
-		ootOptimTriOrder(opSeq2, limbIndex, meshInfo,
+		ootOptimTriOrder(opSeq, limbIndex, meshInfo,
 			limb.allPastSVIs, limb.allOwnAndFutureSVIs, limb.allFutureOnlySVIs,
 			None, limb.ownAndFutureSVIsPriority)
-	ootOptimPrintSeq(opSeq2, meshInfo)
+	ootOptimPrintSeq(opSeq, meshInfo)
 
-def ootOptimLimbAssignVertsToSlots(opSeq, limbIndex, meshInfo, 
+def ootOptimLimbAssignVertsToSlots(opSeqIn, limbIndex, meshInfo, 
 	nSlots, minSlot, startList, endState):
 	# Given a start and end state and a certain range of DMEM vertex slots,
 	# compute the "optimal" assignment of verts to vertex slots.
@@ -779,22 +783,101 @@ def ootOptimLimbAssignVertsToSlots(opSeq, limbIndex, meshInfo,
 	# vertex slots before starting this limb.
 	# startList: A list of SVs, from highest priority / shortest lifetime to
 	# lowest / longest, to have resident before the limb begins. The returned
-	# initial state is similar to this, but may start at either end of the DMEM
-	# range.
-	assert len(startList) <= nSlots
+	# initial state is similar to this, but may be anywhere within DMEM.
 	# endState: A list of the end DMEM vertex state this limb must leave, of
 	# length nSlots, where each entry is a SV index or None for don't care.
+	assert len(startList) <= nSlots
 	assert len(endState) == nSlots
 	limb = meshInfo.limbs[limbIndex]
 	# Now that we know the actual start and end verts, recompute the tri
 	# ordering.
-	opSeq2 = copy.deepcopy(opSeq)
+	opSeq = copy.deepcopy(opSeqIn)
 	endSet = set([svIdx in endState if svIdx is not None])
 	endPriority = [svIdx in limb.ownAndFutureSVIsPriority if svIdx in endSet]
-	ootOptimTriOrder(opSeq2, limbIndex, meshInfo,
-		set(startList), endSet & limb.allOwnAndFutureSVIs, endSet & limb.allFutureOnlySVIs,
+	ootOptimTriOrder(opSeq, limbIndex, meshInfo, set(startList), 
+		endSet & limb.allOwnAndFutureSVIs, endSet & limb.allFutureOnlySVIs,
 		startList, endPriority)
-	# TODO actual slot assignment
+	# Start first assignment pass.
+	minVertsPerLoad = 4 # TODO from hardware numbers
+	startPtr, endPtr = ootOptimSeqGetLimbBounds(opSeq, limbIndex)
+	curPtr = endPtr
+	state = endState.copy()
+	holeStart = -1
+	holeSize = 0
+	fillDir = None
+	def getSVLifetimeLenAt(svIdx, ptr):
+		count = 0
+		for i in range(ptr, len(opSeq)):
+			if opSeq[i][0] == 'svend' and opSeq[i][1] == svIdx:
+				break
+			count += 1
+		else:
+			raise RuntimeError('Ran off end of sequence in getSVLifetimeLenAt')
+		for i in range(ptr, -1, -1):
+			if opSeq[i][0] == 'svbegin' and opSeq[i][1] == svIdx:
+				break
+			count += 1
+		return count
+	def getBestSlot():
+		nonlocal holeStart, holeSize, fillDir
+		if fillDir is None:
+			# Look for more holes
+			largestHoleStart = -1
+			largestHoleSize = 0
+			isHole = False
+			curHoleStart = -1
+			curHoleSize = 0
+			for i in range(nSlots):
+				if state[i] is None:
+					if not isHole:
+						isHole = True
+						curHoleStart = i
+					curHoleSize += 1
+				elif isHole:
+					if curHoleSize > largestHoleSize:
+						largestHoleSize = curHoleSize
+						largestHoleStart = curHoleStart
+			if largestHoleSize >= minVertsPerLoad:
+				# Use this hole
+				holeStart = largestHoleStart
+				holeSize = largestHoleSize
+				fillDir = 1 if largestHoleStart + largestHoleSize // 2 >= nSlots // 2 else -1
+			elif largestHoleSize == 0:
+				pass # TODO look for best place to cut
+			else:
+				pass # TODO look for best place to cut
+		# We have a hole, keep filling the same way.
+		if fillDir == 1:
+			hs = holeStart
+			holeStart += 1
+			holeSize -= 1
+			if holeSize == 0:
+				fillDir = None
+			return hs
+		else:
+			holeSize -= 1
+			if holeSize == 0:
+				fillDir = None
+			return holeStart + holeSize
+	
+	mapStepToSeq = []
+	seqToMapStep = []
+	eventsMode = False
+	for i in range(startPtr, endPtr):
+		cmd = opSeq[i][0]
+		if cmd in {'matl', 'matrix', 'tri'} and not eventsMode:
+			mapStepSeqPointers.append(i)
+			eventsMode = True
+		elif cmd in {'svbegin', 'svend'}:
+			eventsMode = False
+		seqToMapStep.append(len(mapStepToSeq))
+	mapStepSeqPointers.append(endPtr)
+	nSteps = len(mapStepSeqPointers)
+	# Create map data structure: 2D array of steps x slots (only nSlots), with
+	# the data being the svIdx in the slot.
+	map = [[None for _ in range(nSlots)] for _ in range(nSteps)]
+	
+	
 
 
 def ootOptimComputeSeqCost(opSeq):
