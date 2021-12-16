@@ -783,7 +783,8 @@ def ootOptimLimbAssignVertsToSlots(opSeqIn, limbIndex, meshInfo,
 	# vertex slots before starting this limb.
 	# startList: A list of SVs, from highest priority / shortest lifetime to
 	# lowest / longest, to have resident before the limb begins. The returned
-	# initial state is similar to this, but may be anywhere within DMEM.
+	# initial state is similar to this, but may be anywhere within the allowed
+	# slots in DMEM.
 	# endState: A list of the end DMEM vertex state this limb must leave, of
 	# length nSlots, where each entry is a SV index or None for don't care.
 	assert len(startList) <= nSlots
@@ -797,27 +798,142 @@ def ootOptimLimbAssignVertsToSlots(opSeqIn, limbIndex, meshInfo,
 	ootOptimTriOrder(opSeq, limbIndex, meshInfo, set(startList), 
 		endSet & limb.allOwnAndFutureSVIs, endSet & limb.allFutureOnlySVIs,
 		startList, endPriority)
-	# Start first assignment pass.
-	minVertsPerLoad = 4 # TODO from hardware numbers
-	startPtr, endPtr = ootOptimSeqGetLimbBounds(opSeq, limbIndex)
-	curPtr = endPtr
-	state = endState.copy()
+	# Prepare for assignment pass.
+	limbStartPtr, limbEndPtr = ootOptimSeqGetLimbBounds(opSeq, limbIndex)
+	goingForwards = (len(endSet) == 0) # Traverse from start to end
+	curPtr = limbStartPtr if goingForwards else limbEndPtr
+	activeState = ([None] * (nSlots - len(startList)) + startList) if goingForwards else endState.copy()
+	readyState = [s is None for s in activeState]
+	def isSVWeakEnd(p):
+		return (opSeq[p][0] == 'svend' and goingForwards) or (opSeq[p][1] == 'svbegin' and not goingForwards)
+	def isSVStrongEnd(p):
+		return (opSeq[p][0] == 'svbegin' and goingForwards) or (opSeq[p][1] == 'svend' and not goingForwards)
+	def assignSlot(svIdx, slotIdx):
+		assert len(opSeq[curPtr]) == 2 and opSeq[curPtr][1] == svIdx
+		opSeq[curPtr] = [opSeq[curPtr][0], svIdx, slotIdx]
+		p = curPtr
+		while p >= limbStartPtr and p <= limbEndPtr:
+			if isSVWeakEnd(p):
+				opSeq[p] = [opSeq[p][0], svIdx, slotIdx]
+				return
+			p = p + 1 if goingForwards else p - 1
+		raise RuntimeError('assignSlot ran off end!')
+	while curPtr >= limbStartPtr and curPtr <= limbEndPtr:
+		if isSVWeakEnd(curPtr):
+			assert len(opSeq[curPtr]) == 3 # 'svend', svIdx, slotIdx
+			activeState[opSeq[curPtr][2]] = None
+		elif isSVStrongEnd(curPtr):
+			assert len(opSeq[curPtr]) == 2
+			svIdx = opSeq[curPtr][1]
+			if None in readyState:
+				# Just assign vert to last ready slot
+				slotIdx = minSlot + (nSlots - 1) - readyState[::-1].index(None)
+				assignSlot(svIdx, slotIdx)
+			else:
+				# Compute how many more SVs need to be loaded in the current context.
+				# There's no point in setting up a load for more SVs than will
+				# actually be loaded.
+				moreVertsInContext = 0
+				p = curPtr
+				while p >= limbStartPtr and p <= limbEndPtr:
+					if opSeq[p][0] in {'limbstart', 'limbend', 'matrix'}:
+						break
+					elif isSVStrongEnd(p):
+						moreVertsInContext += 1
+					p = p + 1 if goingForwards else p - 1
+				# Try loads.
+				bestScore = -1000000.0
+				bestLoadS, bestLoadL = None, None
+				for loadS in range(minSlot, minSlot+nSlots):
+					cutPenalty = 0.0
+					for loadE in range(loadS+1, minSlot+nSlots+1):
+						loadL = loadE - loadS
+						if loadL > moreVertsInContext:
+							break
+						# If this load, length N, cuts a SV which is used before
+						# the next N verts are loaded, don't allow it.
+						if TODO():
+							break
+						# Score the load.
+						cutPenalty += TODO
+						f = 4.0 # hyperbola
+						score = sqrt(((loadL - 1.0) / f + 1.0) ** 2 - 1.0) * f - cutPenalty
+						if score > bestScore:
+							bestScore = score
+							bestLoadS = loadS
+							bestLoadL = loadL
+				# Perform load.
+				
+				
+		
+	def getSVUseGapLenAt(svIdx, ptr):
+		countforward = 0
+		for i in range(ptr, endPtr):
+			if opSeq[i][0] == 'svend' and opSeq[i][1] == svIdx:
+				countforward = 0
+				break
+			if opSeq[i][0] == 'tri' and svIdx in opSeq[i][1]:
+				break
+			countforward += 1
+		countbackward = 0
+		for i in range(ptr-1, startPtr-1, -1):
+			if opSeq[i][0] == 'svbegin' and opSeq[i][1] == svIdx:
+				countbackward = 0
+				break
+			if opSeq[i][0] == 'tri' and svIdx in opSeq[i][1]:
+				break
+			countbackward += 1
+		ret = countforward + countbackward
+		assert ret > 0
+		return ret
+	def getCurSVUseGapLen(svIdx):
+		return getSVUseGapAt(svIdx, curPtr)
+	
+	
+	def getBestSlot(svIsLong):
+		# Returns a tuple (slotIdx, loadMin, loadSize), where loadMin and
+		# loadSize may be None if a load is not needed for this slot.
+		# If there are any slots where loads are not needed, those are
+		# prioritized; otherwise, the loads are scored and any slots leading to
+		# the best load are used. Finally, all equally scoring slots are chosen
+		# among based on svIsLong, where long SVs are kept towards the outside
+		# of DMEM and short ones towards the middle.
+		bestSlots = []
+		bestWeight = -100000.0
+		for slotIdx in range(minSlot, minSlot+nSlots):
+			if clearedState[slotIdx-minSlot]:
+				weight = 10000.0
+				loadMin = loadSize = None
+			else:
+				loadMin, loadSize, weight = getBestLoadCovering(slotIdx)
+			if weight > bestWeight:
+				bestSlots = []
+				bestWeight = weight
+			if weight == bestWeight:
+				bestSlots.append((slotIdx, loadMin, loadSize))
+		assert len(bestSlots) >= 1
+		if len(bestSlots) == 1:
+			return bestSlots[0][0]
+		distFromCenter = [abs(s[0] - (minSlot + (nSlots//2))) for s in bestSlots]
+		best = max(distFromCenter) if svIsLong else min(distFromCenter)
+		return bestSlots[distFromCenter.index(best)]
+	'''
+	def getSlotWeight(slotIdx):
+		svIdx = state[slotIdx-minSlot]
+		if svIdx is None:
+			count = 1
+			for i in range(curPtr, endPtr):
+				if opSeq[i][0] == 'svbegin':
+					assert len(opSeq[i]) == 3
+					if opSeq[i][2] == slotIdx:
+						break
+				count += 1
+			return count
+		life = getCurSVLifetimeLen(svIdx)
+		return min(-1.0, (-8.0 + math.log2(life + 1)) * 2.0)
 	holeStart = -1
 	holeSize = 0
 	fillDir = None
-	def getSVLifetimeLenAt(svIdx, ptr):
-		count = 0
-		for i in range(ptr, len(opSeq)):
-			if opSeq[i][0] == 'svend' and opSeq[i][1] == svIdx:
-				break
-			count += 1
-		else:
-			raise RuntimeError('Ran off end of sequence in getSVLifetimeLenAt')
-		for i in range(ptr, -1, -1):
-			if opSeq[i][0] == 'svbegin' and opSeq[i][1] == svIdx:
-				break
-			count += 1
-		return count
 	def getBestSlot():
 		nonlocal holeStart, holeSize, fillDir
 		if fillDir is None:
@@ -876,7 +992,7 @@ def ootOptimLimbAssignVertsToSlots(opSeqIn, limbIndex, meshInfo,
 	# Create map data structure: 2D array of steps x slots (only nSlots), with
 	# the data being the svIdx in the slot.
 	map = [[None for _ in range(nSlots)] for _ in range(nSteps)]
-	
+	'''
 	
 
 
