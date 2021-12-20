@@ -506,14 +506,15 @@ def ootOptimPrintSeq(opSeq, meshInfo):
 		print("")
 	print("\n")
 
-def ootOptimSeqGetLimbBounds(opSeq, limbIndex):
+def ootOptimSeqGetLimbBounds(opSeq, limbIndex, includeStart):
 	# Get bounds of sequence. One after limb start, to limb end inclusive.
 	startPtr = 0
 	while opSeq[startPtr] != ('limbstart', limbIndex):
 		startPtr += 1
-	startPtr += 1
-	if opSeq[startPtr][0] == 'matl':
+	if not includeStart:
 		startPtr += 1
+		if opSeq[startPtr][0] == 'matl':
+			startPtr += 1
 	endPtr = len(opSeq) - 1
 	while opSeq[endPtr] != ('limbend', limbIndex):
 		endPtr -= 1
@@ -525,7 +526,7 @@ def ootOptimTriOrder(opSeq, limbIndex, meshInfo,
 	# Given a starting and ending state and priority list, compute the "optimal"
 	# order of drawing tris in the limb. opSeq should be composed of trilists.
 	limb = meshInfo.limbs[limbIndex]
-	startPtr, endPtr = ootOptimSeqGetLimbBounds(opSeq, limbIndex)
+	startPtr, endPtr = ootOptimSeqGetLimbBounds(opSeq, limbIndex, False)
 	origStartPtr = startPtr
 	origEndPtr = endPtr
 	# Load future only verts
@@ -799,11 +800,17 @@ def ootOptimLimbAssignVertsToSlots(opSeqIn, limbIndex, meshInfo,
 		endSet & limb.allOwnAndFutureSVIs, endSet & limb.allFutureOnlySVIs,
 		startList, endPriority)
 	# Prepare for assignment pass.
-	limbStartPtr, limbEndPtr = ootOptimSeqGetLimbBounds(opSeq, limbIndex)
-	limbStartPtr -= 1 # include the limb start command
+	limbStartPtr, limbEndPtr = ootOptimSeqGetLimbBounds(opSeq, limbIndex, True)
 	goingForwards = (len(endSet) == 0) # Traverse from start to end
 	curPtr = limbStartPtr if goingForwards else limbEndPtr
-	activeState = ([None] * (nSlots - len(startList)) + startList) if goingForwards else endState.copy()
+	startState = ([None] * (nSlots - len(startList)) + startList) if goingForwards else None
+	activeState = startState.copy() if goingForwards else endState.copy()
+	# Ready means the slot can have a SV assigned to it now without any other
+	# loads etc. For backwards, ready means either there was (in the future) no
+	# SV in this slot at all, or it has been loaded. For forwards, ready means
+	# either there was (in the past) no SV in this slot at all, or there is a
+	# load which covers this slot and no SV has been assigned to this slot in
+	# this load yet.
 	readyState = [s is None for s in activeState]
 	curMatrix = None
 	# Helper functions
@@ -825,18 +832,43 @@ def ootOptimLimbAssignVertsToSlots(opSeqIn, limbIndex, meshInfo,
 				count += 1
 			p = p + 1 if goingForwards else p - 1
 		return count
+	def isSVUsedBeforeNVertsLoaded(svIdx, n):
+		nLoaded = 0
+		p = curPtr
+		while p >= limbStartPtr and p <= limbEndPtr:
+			if opSeq[p][0] == 'tri':
+				if svIdx in opSeq[p][1]:
+					return nLoaded <= n
+			if isSVStrongEnd(p):
+				nLoaded += 1
+		return False
 	def assignSlot(svIdx, slotIdx):
 		assert len(opSeq[curPtr]) == 2 and opSeq[curPtr][1] == svIdx
-		opSeq[curPtr] = [opSeq[curPtr][0], svIdx, slotIdx]
+		opSeq[curPtr] = (opSeq[curPtr][0], svIdx, slotIdx)
 		assert activeState[slotIdx-minSlot] is None
 		activeState[slotIdx-minSlot] = svIdx
 		p = curPtr
 		while p >= limbStartPtr and p <= limbEndPtr:
 			if isSVWeakEnd(p):
-				opSeq[p] = [opSeq[p][0], svIdx, slotIdx]
+				opSeq[p] = (opSeq[p][0], svIdx, slotIdx)
 				return
 			p = p + 1 if goingForwards else p - 1
 		raise RuntimeError('assignSlot ran off end!')
+	def insertCommand(cmd):
+		nonlocal curPtr
+		opSeq.insert(curPtr if goingForwards else curPtr+1, cmd)
+		if goingForwards: curPtr += 1
+	def cutSV(svIdx, slotIdx):
+		assert activeState[slotIdx-minSlot] == svIdx
+		insertCommand(('svend' if goingForwards else 'svbegin', svIdx, slotIdx))
+		p = curPtr
+		while p >= limbStartPtr and p <= limbEndPtr:
+			if opSeq[p][0] == 'tri' and svIdx in opSeq[p][1]:
+				opSeq.insert(p if goingForwards else p+1, (
+					'svbegin' if goingForwards else 'svend', svIdx))
+				return
+			p = p + 1 if goingForwards else p - 1
+		raise RuntimeError('cutSV ran off end!')
 	# Assignment pass
 	while curPtr >= limbStartPtr and curPtr <= limbEndPtr:
 		if goingForwards and cmdSetsMatrix(curPtr):
@@ -852,8 +884,11 @@ def ootOptimLimbAssignVertsToSlots(opSeqIn, limbIndex, meshInfo,
 			else:
 				raise RuntimeError('Internal error in ootOptimLimbAssignVertsToSlots: could not find previous matrix')
 		elif isSVWeakEnd(curPtr):
-			assert len(opSeq[curPtr]) == 3 # 'svend', svIdx, slotIdx
-			activeState[opSeq[curPtr][2]] = None
+			assert len(opSeq[curPtr]) == 3
+			svIdx = opSeq[curPtr][1]
+			slotIdx = opSeq[curPtr][2]
+			assert activeState[slotIdx-minSlot] == svIdx
+			activeState[slotIdx-minSlot] = None
 		elif isSVStrongEnd(curPtr):
 			assert len(opSeq[curPtr]) == 2
 			svIdx = opSeq[curPtr][1]
@@ -878,29 +913,63 @@ def ootOptimLimbAssignVertsToSlots(opSeqIn, limbIndex, meshInfo,
 						loadL = loadE - loadS
 						if loadL > moreVertsInContext:
 							break
-						# If this load, length N, cuts a SV which is used before
-						# the next N verts are loaded, don't allow it.
-						if TODO():
-							break
-						# Score the load.
-						cutPenalty += TODO
+						lastLoadSlot = loadE-1
+						svIdx = activeState[lastLoadSlot-minSlot]
+						if svIdx is not None:
+							# If this load, length N, cuts a SV which is used before
+							# the next N verts are loaded, don't allow it, cause
+							# the SV would have to be reloaded within that time.
+							if isSVUsedBeforeNVertsLoaded(svIdx, loadL):
+								break
+							# Penalty for cutting this SV
+							trisBeforeUse = getSVTrisBeforeUse(svIdx)
+							cutPenalty += 0.3 * max(20 - trisBeforeUse, 1)
+							if meshInfo.splitVerts[svIdx].limbIndex != curMatrix:
+								cutPenalty += 10
 						f = 4.0 # hyperbola
 						score = sqrt(((loadL - 1.0) / f + 1.0) ** 2 - 1.0) * f - cutPenalty
 						if score > bestScore:
 							bestScore = score
 							bestLoadS = loadS
 							bestLoadL = loadL
+				assert bestLoadS is not None
 				# Perform load.
-				opSeq.insert(curPtr if goingForwards else curPtr+1, ('load', bestLoadS, bestLoadL))
-				if goingForwards: curPtr += 1
+				insertCommand(('load', bestLoadS, bestLoadL))
 				for i in range(bestLoadL):
 					activeState[i] = None
 					readyState[i] = True
 			# Assign vert to last ready slot
 			slotIdx = minSlot + (nSlots - 1) - readyState[::-1].index(True)
 			assignSlot(svIdx, slotIdx)
-		curIdx = curIdx + 1 if goingForwards else curIdx - 1
-				
+		curPtr = curPtr + 1 if goingForwards else curPtr - 1
+	# Fix loads at the beginning.
+	if goingForwards:
+		# Need a load for verts which were assigned to slots which were initially empty.
+		slotsNeedLoads = []
+		p = limbStartPtr
+		while p <= limbEndPtr and len(startState) + len(slotsNeedLoads) < nSlots:
+			if opSeq[p][0] == 'svbegin':
+				slotIdx = opSeq[p][2]
+				if startState[slotIdx-minSlot] is None and slotIdx not in slotsNeedLoads:
+					slotsNeedLoads.append(slotIdx)
+		smin = min(slotsNeedLoads)
+		smax = max(slotsNeedLoads)
+		assert smax - smin + 1 == len(slotsNeedLoads) # TODO may need to relax this later
+		curPtr = limbStartPtr + 1
+		if opSeq[curPtr][0] == 'matl':
+			curPtr += 1
+		insertCommand(('load', smin, smax - smin + 1))
+	else:
+		# Capture start state
+		startState = activeState.copy()
+		assert sorted(startList) == sorted([svIdx for svIdx in startState if svIdx is not None])
+		# Need loads for all slots which are not active but not ready.
+		slotIdx = minSlot
+		while slotIdx < minSlot + nSlots:
+			smin = slotIdx
+			smax = slotIdx
+			
+		pass
 	
 
 
