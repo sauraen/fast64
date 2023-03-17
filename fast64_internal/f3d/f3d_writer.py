@@ -2631,22 +2631,46 @@ def saveBitGeoF3DEX2(value, defaultValue, flagName, geo, matWriteMethod):
             geo.clearFlagList.append(flagName)
 
 
+def saveBitGeo(value, defaultValue, flagName, setGeo, clearGeo, matWriteMethod):
+    if value != defaultValue or matWriteMethod == GfxMatWriteMethod.WriteAll:
+        if value:
+            setGeo.flagList.append(flagName)
+        else:
+            clearGeo.flagList.append(flagName)
+
+
+def saveGeoModeCommon(saveFunc, settings, defaults, args):
+    saveFunc(settings.g_zbuffer, defaults.g_zbuffer, "G_ZBUFFER", args)
+    saveFunc(settings.g_shade, defaults.g_shade, "G_SHADE", args)
+    saveFunc(settings.g_cull_front, defaults.g_cull_front, "G_CULL_FRONT", args)
+    saveFunc(settings.g_cull_back, defaults.g_cull_back, "G_CULL_BACK", args)
+    if bpy.context.scene.isCustomUcode:
+        cu = bpy.context.scene.customUcode
+        if cu.has_attr_offsets:
+            saveFunc(settings.g_attroffset_st_enable, defaults.g_attroffset_st_enable, "G_ATTROFFSET_ST_ENABLE", args)
+            saveFunc(settings.g_attroffset_z_enable, defaults.g_attroffset_z_enable, "G_ATTROFFSET_Z_ENABLE", args)
+        if cu.has_packed_normals:
+            saveFunc(settings.g_packed_normals, defaults.g_packed_normals, "G_PACKED_NORMALS", args)
+        if cu.has_light_to_alpha:
+            saveFunc(settings.g_lighttoalpha, defaults.g_lighttoalpha, "G_LIGHTTOALPHA", args)
+        if cu.has_ambient_occlusion:
+            saveFunc(settings.g_ambocclusion, defaults.g_ambocclusion, "G_AMBOCCLUSION", args)
+    saveFunc(settings.g_fog, defaults.g_fog, "G_FOG", args)
+    saveFunc(settings.g_lighting, defaults.g_lighting, "G_LIGHTING", args)
+    saveFunc(settings.g_tex_gen, defaults.g_tex_gen, "G_TEXTURE_GEN", args)
+    saveFunc(settings.g_tex_gen_linear, defaults.g_tex_gen_linear, "G_TEXTURE_GEN_LINEAR", args)
+    saveFunc(settings.g_lod, defaults.g_lod, "G_LOD", args)
+    saveFunc(settings.g_shade_smooth, defaults.g_shade_smooth, "G_SHADING_SMOOTH", args)
+    if bpy.context.scene.pointLighting:
+        saveFunc(settings.g_lighting_positional, defaults.g_lighting_positional, "G_LIGHTING_POSITIONAL", args)
+    if isUcodeF3DEX1(bpy.context.scene.f3d_ver):
+        saveFunc(settings.g_clipping, defaults.g_clipping, "G_CLIPPING", args)
+
+
 def saveGeoModeDefinitionF3DEX2(fMaterial, settings, defaults, matWriteMethod):
     geo = SPGeometryMode([], [])
-
-    saveBitGeoF3DEX2(settings.g_zbuffer, defaults.g_zbuffer, "G_ZBUFFER", geo, matWriteMethod)
-    saveBitGeoF3DEX2(settings.g_shade, defaults.g_shade, "G_SHADE", geo, matWriteMethod)
-    saveBitGeoF3DEX2(settings.g_cull_front, defaults.g_cull_front, "G_CULL_FRONT", geo, matWriteMethod)
-    saveBitGeoF3DEX2(settings.g_cull_back, defaults.g_cull_back, "G_CULL_BACK", geo, matWriteMethod)
-    saveBitGeoF3DEX2(settings.g_fog, defaults.g_fog, "G_FOG", geo, matWriteMethod)
-    saveBitGeoF3DEX2(settings.g_lighting, defaults.g_lighting, "G_LIGHTING", geo, matWriteMethod)
-
-    # make sure normals are saved correctly.
-    saveBitGeoF3DEX2(settings.g_tex_gen, defaults.g_tex_gen, "G_TEXTURE_GEN", geo, matWriteMethod)
-    saveBitGeoF3DEX2(settings.g_tex_gen_linear, defaults.g_tex_gen_linear, "G_TEXTURE_GEN_LINEAR", geo, matWriteMethod)
-    saveBitGeoF3DEX2(settings.g_shade_smooth, defaults.g_shade_smooth, "G_SHADING_SMOOTH", geo, matWriteMethod)
-    saveBitGeoF3DEX2(settings.g_clipping, defaults.g_clipping, "G_CLIPPING", geo, matWriteMethod)
-
+    saveGeoModeCommon(saveBitGeoF3DEX2, settings, defaults, (geo, matWriteMethod))
+    
     if len(geo.clearFlagList) != 0 or len(geo.setFlagList) != 0:
         if len(geo.clearFlagList) == 0:
             geo.clearFlagList.append("0")
@@ -2660,33 +2684,11 @@ def saveGeoModeDefinitionF3DEX2(fMaterial, settings, defaults, matWriteMethod):
             fMaterial.revert.commands.append(SPGeometryMode(geo.setFlagList, geo.clearFlagList))
 
 
-def saveBitGeo(value, defaultValue, flagName, setGeo, clearGeo, matWriteMethod):
-    if value != defaultValue or matWriteMethod == GfxMatWriteMethod.WriteAll:
-        if value:
-            setGeo.flagList.append(flagName)
-        else:
-            clearGeo.flagList.append(flagName)
-
 
 def saveGeoModeDefinition(fMaterial, settings, defaults, matWriteMethod):
     setGeo = SPSetGeometryMode([])
     clearGeo = SPClearGeometryMode([])
-
-    saveBitGeo(settings.g_zbuffer, defaults.g_zbuffer, "G_ZBUFFER", setGeo, clearGeo, matWriteMethod)
-    saveBitGeo(settings.g_shade, defaults.g_shade, "G_SHADE", setGeo, clearGeo, matWriteMethod)
-    saveBitGeo(settings.g_cull_front, defaults.g_cull_front, "G_CULL_FRONT", setGeo, clearGeo, matWriteMethod)
-    saveBitGeo(settings.g_cull_back, defaults.g_cull_back, "G_CULL_BACK", setGeo, clearGeo, matWriteMethod)
-    saveBitGeo(settings.g_fog, defaults.g_fog, "G_FOG", setGeo, clearGeo, matWriteMethod)
-    saveBitGeo(settings.g_lighting, defaults.g_lighting, "G_LIGHTING", setGeo, clearGeo, matWriteMethod)
-
-    # make sure normals are saved correctly.
-    saveBitGeo(settings.g_tex_gen, defaults.g_tex_gen, "G_TEXTURE_GEN", setGeo, clearGeo, matWriteMethod)
-    saveBitGeo(
-        settings.g_tex_gen_linear, defaults.g_tex_gen_linear, "G_TEXTURE_GEN_LINEAR", setGeo, clearGeo, matWriteMethod
-    )
-    saveBitGeo(settings.g_shade_smooth, defaults.g_shade_smooth, "G_SHADING_SMOOTH", setGeo, clearGeo, matWriteMethod)
-    if bpy.context.scene.f3d_type == "F3DEX_GBI_2" or bpy.context.scene.f3d_type == "F3DEX_GBI":
-        saveBitGeo(settings.g_clipping, defaults.g_clipping, "G_CLIPPING", setGeo, clearGeo, matWriteMethod)
+    saveGeoModeCommon(saveBitGeo, settings, defaults, (setGeo, clearGeo, matWriteMethod))
 
     if len(setGeo.flagList) > 0:
         fMaterial.mat_only_DL.commands.append(setGeo)

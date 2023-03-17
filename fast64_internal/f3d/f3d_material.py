@@ -6,7 +6,7 @@ from bpy.utils import register_class, unregister_class
 from mathutils import Color
 
 from .f3d_enums import *
-from .f3d_gbi import get_F3D_GBI, GBL_c1, GBL_c2, enumTexScroll
+from .f3d_gbi import get_F3D_GBI, GBL_c1, GBL_c2, enumTexScroll, isUcodeF3DEX1
 from .f3d_material_presets import *
 from ..utility import *
 from ..render_settings import Fast64RenderSettings_Properties, update_scene_props_from_render_settings
@@ -151,6 +151,30 @@ def update_draw_layer(self, context):
         material.f3d_mat.presetName = "Custom"
         update_blend_method(material, context)
         set_output_node_groups(material)
+
+
+def all_blender_uses(rdp_settings):
+    '''
+    Returns a dictionary of the external features which the blender may or may
+    not use, or None if set_rendermode is disabled so we don't know.
+    '''
+    if not rdp_settings.set_rendermode:
+        return None
+    is_one_cycle = rdp_settings.g_mdsft_cycletype == "G_CYC_1CYCLE"
+    if rdp_settings.rendermode_advanced_enabled:
+        useZ = rdp_settings.z_cmp or rdp_settings.z_upd
+        useShade = rdp_settings.blend_a1 == "G_BL_A_SHADE"
+        if not is_one_cycle:
+            useShade = useShade or rdp_settings.blend_a2 == "G_BL_A_SHADE"
+    else:
+        f3d = get_F3D_GBI()
+        r1 = getattr(f3d, rdp_settings.rendermode_preset_cycle_1, f3d.G_RM_AA_ZB_OPA_SURF)
+        r2 = getattr(f3d, rdp_settings.rendermode_preset_cycle_2, f3d.G_RM_AA_ZB_OPA_SURF)
+        if is_one_cycle:
+            r2 = 0
+        useZ = bool((r1 | r2) & (f3d.Z_CMP | f3d.Z_UPD))
+        useShade = ((r1 >> 26) & 3) == f3d.G_BL_A_SHADE or ((r2 >> 24) & 3) == f3d.G_BL_A_SHADE
+    return {"Shade Alpha": useShade, "Z Buffer": useZ}
 
 
 def get_blend_method(material):
@@ -383,17 +407,100 @@ def ui_geo_mode(settings, dataHolder, layout, useDropdown):
             icon="TRIA_DOWN" if dataHolder.menu_geo else "TRIA_RIGHT",
         )
     if not useDropdown or dataHolder.menu_geo:
-        inputGroup.prop(settings, "g_zbuffer", text="Z Buffer")
-        inputGroup.prop(settings, "g_shade", text="Shading")
-        inputGroup.prop(settings, "g_cull_front", text="Cull Front")
-        inputGroup.prop(settings, "g_cull_back", text="Cull Back")
-        inputGroup.prop(settings, "g_fog", text="Fog")
-        inputGroup.prop(settings, "g_lighting", text="Lighting")
-        inputGroup.prop(settings, "g_tex_gen", text="Texture UV Generate")
-        inputGroup.prop(settings, "g_tex_gen_linear", text="Texture UV Generate Linear")
-        inputGroup.prop(settings, "g_shade_smooth", text="Smooth Shading")
-        if bpy.context.scene.f3d_type == "F3DEX_GBI_2" or bpy.context.scene.f3d_type == "F3DEX_GBI":
-            inputGroup.prop(settings, "g_clipping", text="Clipping")
+        def indentGroup(parent, textOrProp, isText: bool):
+            c = parent.column(align=True)
+            if isText:
+                c.label(text=textOrProp)
+            else:
+                c.prop(settings, textOrProp)
+                if not getattr(settings, textOrProp):
+                    return None
+            c = c.split(factor=0.1)
+            c.label(text="")
+            c = c.column(align=True)
+            return c
+        cu = bpy.context.scene.customUcode
+        if isinstance(dataHolder, F3DMaterialProperty):
+            warnings = True
+            ccUse = all_combiner_uses(dataHolder)
+            shadeInCC = ccUse["Shade"] or ccUse["Shade Alpha"]
+            blendUse = all_blender_uses(settings)
+            if blendUse is None:
+                warnings = shadeInBlender = zInBlender = False
+            else:
+                shadeInBlender = blendUse["Shade Alpha"]
+                zInBlender = blendUse["Z Buffer"]
+        else:
+            warnings = shadeInCC = shadeInBlender = zInBlender = False
+        
+        inputGroup.prop(settings, "g_shade_smooth")
+        
+        c = indentGroup(inputGroup, "g_lighting", False)
+        if c is not None:
+            if not shadeInCC and not settings.g_tex_gen:
+                c.label(text="Shade not used in CC, can disable lighting.", icon="INFO")
+            if bpy.context.scene.pointLighting:
+                c.prop(settings, "g_lighting_positional")
+            if bpy.context.scene.isCustomUcode and cu.has_packed_normals:
+                c.prop(settings, "g_packed_normals")
+            if bpy.context.scene.isCustomUcode and cu.has_ambient_occlusion:
+                c.prop(settings, "g_ambocclusion")
+            d = indentGroup(c, "g_tex_gen", False)
+            if d is not None:
+                d.prop(settings, "g_tex_gen_linear")
+        
+        light_to_alpha_prereq = bpy.context.scene.isCustomUcode \
+            and cu.has_light_to_alpha and settings.g_lighting
+        if settings.g_fog:
+            shadeAlphaLabel = "Fog"
+        elif light_to_alpha_prereq and settings.g_lighttoalpha:
+            shadeAlphaLabel = "Light intensity"
+        else:
+            shadeAlphaLabel = "Vtx alpha"
+        c = indentGroup(inputGroup, f"Shade alpha = {shadeAlphaLabel}:", True)
+        if light_to_alpha_prereq:
+            c.prop(settings, "g_lighttoalpha")
+        c.prop(settings, "g_fog")
+        if light_to_alpha_prereq and settings.g_lighttoalpha and settings.g_fog:
+            c.label(text="Fog overrides Light-to-Alpha.", icon="ERROR")
+        if warnings and shadeInBlender and not settings.g_fog:
+            c.label(text="Rendermode uses shade alpha, probably fog.", icon="INFO")
+        if warnings and not shadeInBlender and settings.g_fog:
+            c.label(text="Fog not used in rendermode / blender, can disable.", icon="INFO")
+        
+        if bpy.context.scene.isCustomUcode and cu.has_attr_offsets:
+            c = indentGroup(inputGroup, "Attribute offsets:", True)
+            c.prop(settings, "g_attroffset_st_enable")
+            c.prop(settings, "g_attroffset_z_enable")
+        
+        c = indentGroup(inputGroup, "Face culling:", True)
+        c.prop(settings, "g_cull_front")
+        c.prop(settings, "g_cull_back")
+        if settings.g_cull_front and settings.g_cull_back:
+            c.label(text="Nothing will be drawn.", icon="ERROR")
+        
+        c = indentGroup(inputGroup, "Disable if not using:", True)
+        c.prop(settings, "g_zbuffer")
+        if warnings and not settings.g_zbuffer and zInBlender:
+            c.label(text="Rendermode / blender using Z, must enable.", icon="ERROR")
+        elif warnings and settings.g_zbuffer and not zInBlender:
+            c.label(text="Z is not being used, can disable.", icon="INFO")
+        c.prop(settings, "g_shade")
+        if warnings and not settings.g_shade and (shadeInCC or shadeInBlender):
+            if shadeInCC and shadeInBlender:
+                where = "CC and blender"
+            elif shadeInCC:
+                where = "CC"
+            else:
+                where = "rendermode / blender"
+            c.label(text=f"Shade in use in {where}, must enable.", icon="ERROR")
+        elif warnings and settings.g_shade and not shadeInCC and not shadeInBlender:
+            c.label(text="Shade is not being used, can disable.", icon="INFO")
+        
+        c = indentGroup(inputGroup, "Not useful:", True)
+        c.prop(settings, "g_lod")
+        if isUcodeF3DEX1(bpy.context.scene.f3d_type):
+            c.prop(settings, "g_clipping")
 
 
 def ui_upper_mode(settings, dataHolder, layout: bpy.types.UILayout, useDropdown):
@@ -2455,6 +2562,45 @@ class PrimDepthSettings(bpy.types.PropertyGroup):
         return (self.z, self.dz)
 
 
+class CustomUcodeSettings(bpy.types.PropertyGroup):
+    has_packed_normals: bpy.props.BoolProperty(
+        name="Has Packed Normals (Vtx Colors + Lighting)",
+        default=True,
+        description="Microcode supports simultaneous vertex colors and lighting/normals, G_PACKED_NORMALS"
+    )
+    has_light_to_alpha: bpy.props.BoolProperty(
+        name="Has Light-to-Alpha (Cel Shading)",
+        default=True,
+        description="Microcode supports moving light intensity to shade alpha for cel shading and other effects, G_LIGHTTOALPHA"
+    )
+    has_ambient_occlusion: bpy.props.BoolProperty(
+        name="Has Ambient Occlusion",
+        default=True,
+        description="Microcode supports ambient occlusion, G_AMBOCCLUSION"
+    )
+    has_attr_offsets: bpy.props.BoolProperty(
+        name="Has Z,S,T Attribute Offsets",
+        default=True,
+        description=("Microcode supports ST attribute offsets for UV scrolling "
+            + "(G_ATTROFFSET_ST_ENABLE) and Z attribute offsets for fixed decal "
+            + "mode (G_ATTROFFSET_Z_ENABLE)")
+    )
+    vert_buffer_size: bpy.props.IntProperty(
+        name="Max Verts in DMEM",
+        default=32,
+        min=16,
+        max=80,
+        description="Maximum number of vertices which can be held in the RSP's memory at once"
+    )
+    vert_load_count: bpy.props.IntProperty(
+        name="Max Vert Load Count",
+        default=32,
+        min=16,
+        max=80,
+        description="Maximum number of vertices which can be loaded in a single SPVertex command"
+    )
+    
+    
 class RDPSettings(bpy.types.PropertyGroup):
     g_zbuffer: bpy.props.BoolProperty(
         name="Z Buffer",
@@ -2468,21 +2614,51 @@ class RDPSettings(bpy.types.PropertyGroup):
         update=update_node_values_with_preset,
         description="Computes shade coordinates for primitives. Disable if not using lighting, vertex colors or fog"
     )
-    # v1/2 difference
     g_cull_front: bpy.props.BoolProperty(
         name="Cull Front",
+        default=False,
         update=update_node_values_with_preset,
         description="Disables drawing of front faces"
     )
-    # v1/2 difference
     g_cull_back: bpy.props.BoolProperty(
         name="Cull Back",
         default=True,
         update=update_node_values_with_preset,
         description="Disables drawing of back faces"
     )
+    g_attroffset_st_enable: bpy.props.BoolProperty(
+        name="ST Offset (for UV scroll)",
+        default=False,
+        update=update_node_values_with_preset,
+        description="Custom microcode: Enables offsets to vertex ST values, usually for UV scrolling"
+    )
+    g_attroffset_z_enable: bpy.props.BoolProperty(
+        name="Z Offset (for decal fix)",
+        default=False,
+        update=update_node_values_with_preset,
+        description="Custom microcode: Enables offset to vertex Z. To fix decals, set the Z mode to opaque and enable this"
+    )
+    g_packed_normals: bpy.props.BoolProperty(
+        name="Packed Normals (Vtx Colors + Lighting)",
+        default=False,
+        update=update_node_values_with_preset,
+        description="Custom microcode: Packs vertex normals in unused 16 bits of each vertex, enabling simultaneous vertex colors and lighting"
+    )
+    g_lighttoalpha: bpy.props.BoolProperty(
+        name="Light to Alpha (Cel Shading)",
+        default=False,
+        update=update_node_values_with_preset,
+        description="Custom microcode: Moves light intensity to shade alpha, used for cel shading and other effects"
+    )
+    g_ambocclusion: bpy.props.BoolProperty(
+        name="Ambient Occlusion",
+        default=False,
+        update=update_node_values_with_preset,
+        description="Custom microcode: Scales ambient and/or directional light intensity with vertex alpha. Bake scene shadows / AO into vertex alpha, not vertex color"
+    )
     g_fog: bpy.props.BoolProperty(
         name="Fog",
+        default=False,
         update=update_node_values_with_preset,
         description="Turns on/off fog calculation. Fog variable gets stored into shade alpha"
     )
@@ -2490,29 +2666,43 @@ class RDPSettings(bpy.types.PropertyGroup):
         name="Lighting",
         default=True,
         update=update_node_values_with_preset,
-        description="Enables calculation shade color using lights. Turn off for vertex colors as shade color"
+        description="Enables calculating shade color using lights. Turn off for vertex colors as shade color"
     )
     g_tex_gen: bpy.props.BoolProperty(
         name="Texture UV Generate",
+        default=False,
         update=update_node_values_with_preset,
         description="Generates texture coordinates for reflection mapping based on vertex normals and lookat direction. On a skybox texture, maps the sky to the center of the texture and the ground to a circle inscribed in the border. Requires lighting enabled to use"
     )
     g_tex_gen_linear: bpy.props.BoolProperty(
         name="Texture UV Generate Linear",
+        default=False,
         update=update_node_values_with_preset,
         description="Modifies the texgen mapping; enable with texgen. Use a normal panorama image for the texture, with the sky at the top and the ground at the bottom. Requires lighting enabled to use"
     )
-    # v1/2 difference
+    g_lod: bpy.props.BoolProperty(
+        name="LoD (does nothing)",
+        default=False,
+        update=update_node_values_with_preset,
+        description="Not implemented in any known microcodes. No effect whether enabled or disabled"
+    )
     g_shade_smooth: bpy.props.BoolProperty(
         name="Smooth Shading",
         default=True,
         update=update_node_values_with_preset,
         description="Shades primitive smoothly using interpolation between shade values for each vertex (Gouraud shading)"
     )
-    # f3dlx2 only
+    g_lighting_positional: bpy.props.BoolProperty(
+        name="Point Lighting",
+        default=True,
+        update=update_node_values_with_preset,
+        description="Allows lights affecting mesh to be point or directional. If disabled, assumes all lights are directional, which will corrupt lighting if you load actual point lights"
+    )
     g_clipping: bpy.props.BoolProperty(
         name="Clipping",
+        default=False,
         update=update_node_values_with_preset,
+        description="F3DEX1/LX only, exact function unknown"
     )
 
     # upper half mode
@@ -2756,11 +2946,18 @@ class RDPSettings(bpy.types.PropertyGroup):
             self.g_shade,
             self.g_cull_front,
             self.g_cull_back,
+            self.g_attroffset_st_enable,
+            self.g_attroffset_z_enable,
+            self.g_packed_normals,
+            self.g_lighttoalpha,
+            self.g_ambocclusion,
             self.g_fog,
             self.g_lighting,
             self.g_tex_gen,
             self.g_tex_gen_linear,
+            self.g_lod,
             self.g_shade_smooth,
+            self.g_lighting_positional,
             self.g_clipping,
             self.g_mdsft_alpha_dither,
             self.g_mdsft_rgb_dither,
@@ -3689,6 +3886,7 @@ mat_classes = (
     ProceduralAnimProperty,
     ProcAnimVectorProperty,
     PrimDepthSettings,
+    CustomUcodeSettings,
     RDPSettings,
     DefaultRDPSettingsPanel,
     F3DMaterialProperty,
@@ -3740,7 +3938,24 @@ def mat_register():
         items=enumF3D,
         default="F3D",
     )
-    bpy.types.Scene.isHWv1 = bpy.props.BoolProperty(name="Is Hardware v1?")
+    bpy.types.Scene.pointLighting = bpy.props.BoolProperty(
+        name="Has Point Lighting",
+        default=False,
+        description="Microcode supports point lighting, G_LIGHTING_POSITIONAL"
+    )
+    bpy.types.Scene.isCustomUcode = bpy.props.BoolProperty(
+        name="Custom Microcode",
+        default=False,
+        description="Microcode is custom or modded; enable to see options"
+    )
+    bpy.types.Scene.customUcode = bpy.props.PointerProperty(type=CustomUcodeSettings)
+    bpy.types.Scene.isHWv1 = bpy.props.BoolProperty(
+        name="Is Hardware v1?",
+        default=False,
+        description=("Only early N64 devkits have V1 RCP chips; all retail consoles have V2. "
+            + "Display lists made for V1 and V2 are incompatible with each other, "
+            + "so any hardware which can play retail games is V2")
+    )
 
     # RDP Defaults
     bpy.types.World.rdp_defaults = bpy.props.PointerProperty(type=RDPSettings)

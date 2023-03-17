@@ -144,6 +144,19 @@ class SM64_ArmatureToolsPanel(SM64_Panel):
         col.operator(SM64_AddWaterBox.bl_idname)
 
 
+def uiCustomUcode(layout, context):
+    settings = context.scene.customUcode
+    layout = layout.box().column()
+    if context.scene.f3d_type != "F3DEX2/LX2":
+        layout.box().label(text="Microcode type must be F3DEX2.", icon="ERROR")
+    layout.prop(settings, "has_packed_normals")
+    layout.prop(settings, "has_light_to_alpha")
+    layout.prop(settings, "has_ambient_occlusion")
+    layout.prop(settings, "has_attr_offsets")
+    prop_split(layout, settings, "vert_buffer_size", "Max Verts in DMEM")
+    prop_split(layout, settings, "vert_load_count", "Max Vert Load Count")
+
+
 class F3D_GlobalSettingsPanel(bpy.types.Panel):
     bl_idname = "F3D_PT_global_settings"
     bl_label = "F3D Global Settings"
@@ -160,6 +173,10 @@ class F3D_GlobalSettingsPanel(bpy.types.Panel):
         col = self.layout.column()
         col.scale_y = 1.1  # extra padding
         prop_split(col, context.scene, "f3d_type", "F3D Microcode")
+        col.prop(context.scene, "pointLighting")
+        col.prop(context.scene, "isCustomUcode")
+        if context.scene.isCustomUcode:
+            uiCustomUcode(col, context)
         col.prop(context.scene, "isHWv1")
         col.prop(context.scene, "saveTextures")
         col.prop(context.scene, "f3d_simple", text="Simple Material UI")

@@ -882,6 +882,16 @@ class F3DContext:
             mat.rdp_settings.g_cull_front = value
         if bitFlags & self.f3d.G_CULL_BACK:
             mat.rdp_settings.g_cull_back = value
+        if bitFlags & self.f3d.G_ATTROFFSET_ST_ENABLE:
+            mat.rdp_settings.g_attroffset_st_enable = value
+        if bitFlags & self.f3d.G_ATTROFFSET_Z_ENABLE:
+            mat.rdp_settings.g_attroffset_z_enable = value
+        if bitFlags & self.f3d.G_PACKED_NORMALS:
+            mat.rdp_settings.g_packed_normals = value
+        if bitFlags & self.f3d.G_LIGHTTOALPHA:
+            mat.rdp_settings.g_lighttoalpha = value
+        if bitFlags & self.f3d.G_AMBOCCLUSION:
+            mat.rdp_settings.g_ambocclusion = value
         if bitFlags & self.f3d.G_FOG:
             mat.rdp_settings.g_fog = value
         if bitFlags & self.f3d.G_LIGHTING:
@@ -890,8 +900,12 @@ class F3DContext:
             mat.rdp_settings.g_tex_gen = value
         if bitFlags & self.f3d.G_TEXTURE_GEN_LINEAR:
             mat.rdp_settings.g_tex_gen_linear = value
+        if bitFlags & self.f3d.G_LOD:
+            mat.rdp_settings.g_lod = value
         if bitFlags & self.f3d.G_SHADING_SMOOTH:
             mat.rdp_settings.g_shade_smooth = value
+        if bitFlags & self.f3d.G_LIGHTING_POSITIONAL:
+            mat.rdp_settings.g_lighting_positional = value
         if bitFlags & self.f3d.G_CLIPPING:
             mat.rdp_settings.g_clipping = value
 
@@ -904,11 +918,18 @@ class F3DContext:
         mat.rdp_settings.g_shade = bitFlags & self.f3d.G_SHADE != 0
         mat.rdp_settings.g_cull_front = bitFlags & self.f3d.G_CULL_FRONT != 0
         mat.rdp_settings.g_cull_back = bitFlags & self.f3d.G_CULL_BACK != 0
+        mat.rdp_settings.g_attroffset_st_enable = bitFlags & self.f3d.G_ATTROFFSET_ST_ENABLE != 0
+        mat.rdp_settings.g_attroffset_z_enable = bitFlags & self.f3d.G_ATTROFFSET_Z_ENABLE != 0
+        mat.rdp_settings.g_packed_normals = bitFlags & self.f3d.G_PACKED_NORMALS != 0
+        mat.rdp_settings.g_lighttoalpha = bitFlags & self.f3d.G_LIGHTTOALPHA != 0
+        mat.rdp_settings.g_ambocclusion = bitFlags & self.f3d.G_AMBOCCLUSION != 0
         mat.rdp_settings.g_fog = bitFlags & self.f3d.G_FOG != 0
         mat.rdp_settings.g_lighting = bitFlags & self.f3d.G_LIGHTING != 0
         mat.rdp_settings.g_tex_gen = bitFlags & self.f3d.G_TEXTURE_GEN != 0
         mat.rdp_settings.g_tex_gen_linear = bitFlags & self.f3d.G_TEXTURE_GEN_LINEAR != 0
+        mat.rdp_settings.g_lod = bitFlags & self.f3d.G_LOD != 0
         mat.rdp_settings.g_shade_smooth = bitFlags & self.f3d.G_SHADING_SMOOTH != 0
+        mat.rdp_settings.g_lighting_positional = bitFlags & self.f3d.G_LIGHTING_POSITIONAL != 0
         mat.rdp_settings.g_clipping = bitFlags & self.f3d.G_CLIPPING != 0
 
     def setCombineLerp(self, lerp0, lerp1):

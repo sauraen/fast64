@@ -118,24 +118,20 @@ ACMUXDict = {
 }
 
 
+def isUcodeF3DEX1(F3D_VER):
+    return F3D_VER in {"F3DLP.Rej", "F3DLX.Rej", "F3DEX/LX"}
+
+
+def isUcodeF3DEX2(F3D_VER):
+    return F3D_VER in {"F3DEX2.Rej/LX2.Rej", "F3DEX2/LX2"}
+
+
 class F3D:
     """NOTE: do not initialize this class manually! use get_F3D_GBI so that the single instance is cached from the microcode type."""
 
     def __init__(self, F3D_VER, _HW_VERSION_1):
-        if F3D_VER == "F3DEX2.Rej/LX2.Rej" or F3D_VER == "F3DEX2/LX2":
-            self.F3DEX_GBI = False
-            self.F3DEX_GBI_2 = True
-            self.F3DLP_GBI = False
-        elif F3D_VER == "F3DLP.Rej" or F3D_VER == "F3DLX.Rej" or F3D_VER == "F3DEX/LX":
-            self.F3DEX_GBI = True
-            self.F3DEX_GBI_2 = False
-            self.F3DLP_GBI = True
-        elif F3D_VER == "F3D":
-            self.F3DEX_GBI = False
-            self.F3DEX_GBI_2 = False
-            self.F3DLP_GBI = False
-        else:
-            raise PluginError("Invalid F3D version " + F3D_VER + ".")
+        self.F3DEX_GBI = self.F3DLP_GBI = isUcodeF3DEX1(F3D_VER)
+        self.F3DEX_GBI_2 = isUcodeF3DEX2(F3D_VER)
 
         self.vert_buffer_size = vertexBufferSize[F3D_VER][0]
         self.vert_load_size = vertexBufferSize[F3D_VER][1]
@@ -326,20 +322,17 @@ class F3D:
         self.G_TEXTURE_GEN = 0x00040000
         self.G_TEXTURE_GEN_LINEAR = 0x00080000
         self.G_LOD = 0x00100000  # NOT IMPLEMENTED
+        self.G_LIGHTING_POSITIONAL = 0x00400000
         if F3DEX_GBI or F3DLP_GBI:
             self.G_CLIPPING = 0x00800000
         else:
             self.G_CLIPPING = 0x00000000
-
-        # if _LANGUAGE_ASSEMBLY:
-        self.G_FOG_H = self.G_FOG / 0x10000
-        self.G_LIGHTING_H = self.G_LIGHTING / 0x10000
-        self.G_TEXTURE_GEN_H = self.G_TEXTURE_GEN / 0x10000
-        self.G_TEXTURE_GEN_LINEAR_H = self.G_TEXTURE_GEN_LINEAR / 0x10000
-        self.G_LOD_H = self.G_LOD / 0x10000  # NOT IMPLEMENTED
-        if F3DEX_GBI or F3DLP_GBI:
-            self.G_CLIPPING_H = self.G_CLIPPING / 0x10000
-        # endif
+        # Custom microcode
+        self.G_ATTROFFSET_ST_ENABLE = 0x00000100
+        self.G_ATTROFFSET_Z_ENABLE = 0x00000800
+        self.G_PACKED_NORMALS = 0x00001000
+        self.G_LIGHTTOALPHA = 0x00002000
+        self.G_AMBOCCLUSION = 0x00004000
 
         # Need these defined for Sprite Microcode
         # if _LANGUAGE_ASSEMBLY:
@@ -3902,14 +3895,22 @@ def geoFlagListToWord(flagList, f3d):
             word += f3d.G_SHADE
         elif name == "G_TEXTURE_ENABLE":
             word += f3d.G_TEXTURE_ENABLE
-        elif name == "G_SHADING_SMOOTH":
-            word += f3d.G_SHADING_SMOOTH
         elif name == "G_CULL_FRONT":
             word += f3d.G_CULL_FRONT
         elif name == "G_CULL_BACK":
             word += f3d.G_CULL_BACK
         elif name == "G_CULL_BOTH":
             word += f3d.G_CULL_BOTH
+        elif name == "G_ATTROFFSET_ST_ENABLE":
+            word += f3d.G_ATTROFFSET_ST_ENABLE
+        elif name == "G_ATTROFFSET_Z_ENABLE":
+            word += f3d.G_ATTROFFSET_Z_ENABLE
+        elif name == "G_PACKED_NORMALS":
+            word += f3d.G_PACKED_NORMALS
+        elif name == "G_LIGHTTOALPHA":
+            word += f3d.G_LIGHTTOALPHA
+        elif name == "G_AMBOCCLUSION":
+            word += f3d.G_AMBOCCLUSION
         elif name == "G_FOG":
             word += f3d.G_FOG
         elif name == "G_LIGHTING":
@@ -3920,6 +3921,10 @@ def geoFlagListToWord(flagList, f3d):
             word += f3d.G_TEXTURE_GEN_LINEAR
         elif name == "G_LOD":
             word += f3d.G_LOD
+        elif name == "G_SHADING_SMOOTH":
+            word += f3d.G_SHADING_SMOOTH
+        elif name == "G_LIGHTING_POSITIONAL":
+            word += f3d.G_LIGHTING_POSITIONAL
         elif name == "G_CLIPPING":
             word += f3d.G_CLIPPING
         else:
