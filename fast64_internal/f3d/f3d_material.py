@@ -421,23 +421,24 @@ def ui_geo_mode(settings, dataHolder, layout, useDropdown):
             return c
         cu = bpy.context.scene.customUcode
         if isinstance(dataHolder, F3DMaterialProperty):
-            warnings = True
+            ccWarnings = blendWarnings = True
             ccUse = all_combiner_uses(dataHolder)
             shadeInCC = ccUse["Shade"] or ccUse["Shade Alpha"]
             blendUse = all_blender_uses(settings)
             if blendUse is None:
-                warnings = shadeInBlender = zInBlender = False
+                blendWarnings = shadeInBlender = zInBlender = False
             else:
                 shadeInBlender = blendUse["Shade Alpha"]
                 zInBlender = blendUse["Z Buffer"]
         else:
-            warnings = shadeInCC = shadeInBlender = zInBlender = False
+            ccWarnings = shadeInCC = False
+            blendWarnings = shadeInBlender = zInBlender = False
         
         inputGroup.prop(settings, "g_shade_smooth")
         
         c = indentGroup(inputGroup, "g_lighting", False)
         if c is not None:
-            if not shadeInCC and not settings.g_tex_gen:
+            if ccWarnings and not shadeInCC and not settings.g_tex_gen:
                 c.label(text="Shade not used in CC, can disable lighting.", icon="INFO")
             if bpy.context.scene.pointLighting:
                 c.prop(settings, "g_lighting_positional")
@@ -463,9 +464,9 @@ def ui_geo_mode(settings, dataHolder, layout, useDropdown):
         c.prop(settings, "g_fog")
         if light_to_alpha_prereq and settings.g_lighttoalpha and settings.g_fog:
             c.label(text="Fog overrides Light-to-Alpha.", icon="ERROR")
-        if warnings and shadeInBlender and not settings.g_fog:
+        if blendWarnings and shadeInBlender and not settings.g_fog:
             c.label(text="Rendermode uses shade alpha, probably fog.", icon="INFO")
-        if warnings and not shadeInBlender and settings.g_fog:
+        if blendWarnings and not shadeInBlender and settings.g_fog:
             c.label(text="Fog not used in rendermode / blender, can disable.", icon="INFO")
         
         if bpy.context.scene.isCustomUcode and cu.has_attr_offsets:
@@ -481,12 +482,12 @@ def ui_geo_mode(settings, dataHolder, layout, useDropdown):
         
         c = indentGroup(inputGroup, "Disable if not using:", True)
         c.prop(settings, "g_zbuffer")
-        if warnings and not settings.g_zbuffer and zInBlender:
+        if blendWarnings and not settings.g_zbuffer and zInBlender:
             c.label(text="Rendermode / blender using Z, must enable.", icon="ERROR")
-        elif warnings and settings.g_zbuffer and not zInBlender:
+        elif blendWarnings and settings.g_zbuffer and not zInBlender:
             c.label(text="Z is not being used, can disable.", icon="INFO")
         c.prop(settings, "g_shade")
-        if warnings and not settings.g_shade and (shadeInCC or shadeInBlender):
+        if ccWarnings and not settings.g_shade and (shadeInCC or shadeInBlender):
             if shadeInCC and shadeInBlender:
                 where = "CC and blender"
             elif shadeInCC:
@@ -494,7 +495,7 @@ def ui_geo_mode(settings, dataHolder, layout, useDropdown):
             else:
                 where = "rendermode / blender"
             c.label(text=f"Shade in use in {where}, must enable.", icon="ERROR")
-        elif warnings and settings.g_shade and not shadeInCC and not shadeInBlender:
+        elif ccWarnings and settings.g_shade and not shadeInCC and not shadeInBlender:
             c.label(text="Shade is not being used, can disable.", icon="INFO")
         
         c = indentGroup(inputGroup, "Not useful:", True)
@@ -834,6 +835,19 @@ class F3DPanel(bpy.types.Panel):
         elif context.scene.gameEditorMode == "OOT":
             prop_split(layout, material.f3d_mat.draw_layer, "oot", "Draw Layer")
 
+    def ui_ao(self, f3dMat, inputCol, showCheckBox):
+        if f3dMat.rdp_settings.g_ambocclusion:
+            inputGroup = inputCol.column()
+            if showCheckBox:
+                inputGroup.prop(f3dMat, "set_ao", test="Set Ambient Occlusion")
+            if f3dMat.set_ao:
+                r = inputGroup.row().split(factor=0.5)
+                r.label(text="AO Ambient")
+                r.prop(f3dMat, "ao_ambient", text="")
+                r = inputGroup.row().split(factor=0.5)
+                r.label(text="AO Directional")
+                r.prop(f3dMat, "ao_directional", text="")
+
     def ui_fog(self, f3dMat, inputCol, showCheckBox):
         if f3dMat.rdp_settings.g_fog:
             inputGroup = inputCol.column()
@@ -901,6 +915,9 @@ class F3DPanel(bpy.types.Panel):
 
         if useDict["Convert"] and f3dMat.set_k0_5:
             self.ui_convert(f3dMat, inputCol, False)
+
+        if f3dMat.set_ao:
+            self.ui_ao(f3dMat, inputCol, False)
 
         if f3dMat.set_fog:
             self.ui_fog(f3dMat, inputCol, False)
@@ -1001,6 +1018,8 @@ class F3DPanel(bpy.types.Panel):
 
             if useDict["Convert"]:
                 self.ui_convert(f3dMat, inputCol, True)
+
+            self.ui_ao(f3dMat, inputCol, True)
 
             self.ui_fog(f3dMat, inputCol, True)
 
@@ -3646,6 +3665,25 @@ class F3DMaterialProperty(bpy.types.PropertyGroup):
     f3d_light6: bpy.props.PointerProperty(type=bpy.types.Light, update=F3DOrganizeLights)
     f3d_light7: bpy.props.PointerProperty(type=bpy.types.Light, update=F3DOrganizeLights)
 
+    # Ambient Occlusion
+    ao_ambient: bpy.props.FloatProperty(
+        name="AO Ambient",
+        min=0.0,
+        max=1.0,
+        default=1.0,
+        description="How much ambient occlusion (vertex alpha) affects ambient light intensity",
+        update=update_node_values_without_preset,
+    )
+    ao_directional: bpy.props.FloatProperty(
+        name="AO Directional",
+        min=0.0,
+        max=1.0,
+        default=0.625,
+        description="How much ambient occlusion (vertex alpha) affects directional light intensity",
+        update=update_node_values_without_preset,
+    )
+    set_ao: bpy.props.BoolProperty(update=update_node_values_without_preset)
+
     # Fog Properties
     fog_color: bpy.props.FloatVectorProperty(
         name="Fog Color",
@@ -3717,6 +3755,7 @@ class F3DMaterialProperty(bpy.types.PropertyGroup):
             round(self.k5, 4) if self.set_k0_5 else None,
             self.combiner1.key() if self.set_combiner else None,
             self.combiner2.key() if self.set_combiner else None,
+            tuple(self.ao_ambient, self.ao_directional) if self.set_ao else None,
             tuple([round(value, 4) for value in self.fog_color]) if self.set_fog else None,
             tuple([round(value, 4) for value in self.fog_position]) if self.set_fog else None,
             tuple([round(value, 4) for value in self.default_light_color]) if useDefaultLighting else None,

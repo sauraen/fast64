@@ -1495,6 +1495,10 @@ def saveOrGetF3DMaterial(material, fModel, obj, drawLayer, convertTextureData):
                 )
             )
 
+    if f3dMat.set_ao:
+        fMaterial.mat_only_DL.commands.append(
+            SPAOFactors(int(f3dMat.ao_ambient * 2**16), int(f3dMat.ao_directional * 2**16)))
+
     if f3dMat.set_fog:
         if f3dMat.use_global_fog and fModel.global_data.getCurrentAreaData() is not None:
             fogData = fModel.global_data.getCurrentAreaData().fog_data

@@ -1453,6 +1453,7 @@ class F3D:
         else:
             self.G_MW_POINTS = 0x0C
         self.G_MW_PERSPNORM = 0x0E
+        self.G_MW_MODS = 0x10
 
         # These are offsets from the address in the dmem table
 
@@ -1532,6 +1533,11 @@ class F3D:
         self.G_MWO_POINT_ST = 0x14
         self.G_MWO_POINT_XYSCREEN = 0x18
         self.G_MWO_POINT_ZSCREEN = 0x1C
+        
+        self.G_MWO_CLIP_MOD = 0x00
+        self.G_MWO_ATTROFS_ST = 0x04
+        self.G_MWO_ATTROFS_Z = 0x08
+        self.G_MWO_AO = 0x0C
 
         # Texturing macros
 
@@ -3793,6 +3799,15 @@ class DPSetHilite2Tile(GbiMacro):
             ((self.width - 1) * 4 + self.hilite.x2) & 0xFFF,
             ((self.height - 1) * 4 + self.hilite.y2) & 0xFFF,
         ).to_binary(f3d, segments)
+
+
+@dataclass(unsafe_hash=True)
+class SPAOFactors(GbiMacro):
+    amb: int
+    dir: int
+
+    def to_binary(self, f3d, segments):
+        return gsMoveWd(f3d.G_MW_MODS, f3d.G_MWO_AO, (_SHIFTL(self.amb, 16, 16) | _SHIFTL(self.dir, 0, 16)), f3d)
 
 
 @dataclass(unsafe_hash=True)

@@ -1575,6 +1575,10 @@ class F3DContext:
                     self.setLightColor(dlData, command)
                 elif command.name[:13] == "gsSPSetLights":
                     self.setLights(dlData, command)
+                elif command.name == "gsSPSetAO":
+                    mat.ao_ambient = command.params[0] / (2**16)
+                    mat.ao_directional = command.params[1] / (2**16)
+                    mat.set_ao = True
                 elif command.name == "gsSPFogFactor":
                     pass
                 elif command.name == "gsSPFogPosition":
