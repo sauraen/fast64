@@ -1575,9 +1575,20 @@ class F3DContext:
                     self.setLightColor(dlData, command)
                 elif command.name[:13] == "gsSPSetLights":
                     self.setLights(dlData, command)
-                elif command.name == "gsSPSetAO":
-                    mat.ao_ambient = command.params[0] / (2**16)
-                    mat.ao_directional = command.params[1] / (2**16)
+                elif command.name == "gsSPClipModSettings":
+                    pass
+                elif command.name == "gsSPAttrOffsetST":
+                    mat.attroffs_st = [
+                        from_s16_str(command.params[0]) / 32,
+                        from_s16_str(command.params[1]) / 32
+                    ]
+                    mat.set_attroffs_st = True
+                elif command.name == "gsSPAttrOffsetZ":
+                    mat.attroffs_z = from_s16_str(command.params[0])
+                    mat.set_attroffs_z = True
+                elif command.name == "gsSPAmbOcclusion":
+                    mat.ao_ambient = float(int(command.params[0])) / (2**16)
+                    mat.ao_directional = float(int(command.params[1])) / (2**16)
                     mat.set_ao = True
                 elif command.name == "gsSPFogFactor":
                     pass

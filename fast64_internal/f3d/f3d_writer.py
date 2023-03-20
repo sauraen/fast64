@@ -1228,11 +1228,11 @@ def convertVertexData(
     mesh,
     loopPos,
     loopUV,
-    loopColorOrNormal,
+    loopColor,
+    loopNormal,
     texDimensions,
     transformMatrix,
     isPointSampled,
-    exportVertexColors,
     tex_scale=(1, 1),
 ):
     # Position (8 bytes)
@@ -1253,13 +1253,17 @@ def convertVertexData(
         convertFloatToFixed16(loopUV[0] * texDimensions[0] - pixelOffset[0]),
         convertFloatToFixed16(loopUV[1] * texDimensions[1] - pixelOffset[1]),
     ]
-
-    # Color/Normal (4 bytes)
-    if exportVertexColors:
-        colorOrNormal = [scaleToU8(c).to_bytes(1, "big")[0] for c in loopColorOrNormal]
-    else:
+    
+    packedNormal = 0
+    if loopNormal is not None:
         # normal transformed correctly.
         normal = (transformMatrix.inverted().transposed() @ loopColorOrNormal).normalized()
+        if loopColor is not None:
+            packedNormal = packNormal(normal)
+    
+    if loopColor is not None:
+        colorOrNormal = [scaleToU8(c).to_bytes(1, "big")[0] for c in loopColorOrNormal]
+    else:
         colorOrNormal = [
             int(round(normal[0] * 127)).to_bytes(1, "big", signed=True)[0],
             int(round(normal[1] * 127)).to_bytes(1, "big", signed=True)[0],
@@ -1267,7 +1271,7 @@ def convertVertexData(
             scaleToU8(loopColorOrNormal[3]).to_bytes(1, "big")[0],
         ]
 
-    return Vtx(position, uv, colorOrNormal)
+    return Vtx(position, uv, colorOrNormal, packedNormal)
 
 
 @functools.lru_cache(0)
@@ -1495,9 +1499,24 @@ def saveOrGetF3DMaterial(material, fModel, obj, drawLayer, convertTextureData):
                 )
             )
 
+    if f3dMat.set_attroffs_st:
+        fMaterial.mat_only_DL.commands.append(
+            SPAttrOffsetST(
+                hex(to_s16(f3dMat.attroffs_st[0] * 32), 4),
+                hex(to_s16(f3dMat.attroffs_st[1] * 32), 4),
+            )
+        )
+    
+    if f3dMat.set_attroffs_z:
+        fMaterial.mat_only_DL.commands.append(SPAttrOffsetZ(f3dMat.attroffs_z))
+
     if f3dMat.set_ao:
         fMaterial.mat_only_DL.commands.append(
-            SPAOFactors(int(f3dMat.ao_ambient * 2**16), int(f3dMat.ao_directional * 2**16)))
+            SPAmbOcclusion(
+                hex(round(f3dMat.ao_ambient * 2**16), 4),
+                hex(round(f3dMat.ao_directional * 2**16), 4)
+            )
+        )
 
     if f3dMat.set_fog:
         if f3dMat.use_global_fog and fModel.global_data.getCurrentAreaData() is not None:
@@ -2644,31 +2663,31 @@ def saveBitGeo(value, defaultValue, flagName, setGeo, clearGeo, matWriteMethod):
 
 
 def saveGeoModeCommon(saveFunc, settings, defaults, args):
-    saveFunc(settings.g_zbuffer, defaults.g_zbuffer, "G_ZBUFFER", args)
-    saveFunc(settings.g_shade, defaults.g_shade, "G_SHADE", args)
-    saveFunc(settings.g_cull_front, defaults.g_cull_front, "G_CULL_FRONT", args)
-    saveFunc(settings.g_cull_back, defaults.g_cull_back, "G_CULL_BACK", args)
+    saveFunc(settings.g_zbuffer, defaults.g_zbuffer, "G_ZBUFFER", *args)
+    saveFunc(settings.g_shade, defaults.g_shade, "G_SHADE", *args)
+    saveFunc(settings.g_cull_front, defaults.g_cull_front, "G_CULL_FRONT", *args)
+    saveFunc(settings.g_cull_back, defaults.g_cull_back, "G_CULL_BACK", *args)
     if bpy.context.scene.isCustomUcode:
         cu = bpy.context.scene.customUcode
         if cu.has_attr_offsets:
-            saveFunc(settings.g_attroffset_st_enable, defaults.g_attroffset_st_enable, "G_ATTROFFSET_ST_ENABLE", args)
-            saveFunc(settings.g_attroffset_z_enable, defaults.g_attroffset_z_enable, "G_ATTROFFSET_Z_ENABLE", args)
+            saveFunc(settings.g_attroffset_st_enable, defaults.g_attroffset_st_enable, "G_ATTROFFSET_ST_ENABLE", *args)
+            saveFunc(settings.g_attroffset_z_enable, defaults.g_attroffset_z_enable, "G_ATTROFFSET_Z_ENABLE", *args)
         if cu.has_packed_normals:
-            saveFunc(settings.g_packed_normals, defaults.g_packed_normals, "G_PACKED_NORMALS", args)
+            saveFunc(settings.g_packed_normals, defaults.g_packed_normals, "G_PACKED_NORMALS", *args)
         if cu.has_light_to_alpha:
-            saveFunc(settings.g_lighttoalpha, defaults.g_lighttoalpha, "G_LIGHTTOALPHA", args)
+            saveFunc(settings.g_lighttoalpha, defaults.g_lighttoalpha, "G_LIGHTTOALPHA", *args)
         if cu.has_ambient_occlusion:
-            saveFunc(settings.g_ambocclusion, defaults.g_ambocclusion, "G_AMBOCCLUSION", args)
-    saveFunc(settings.g_fog, defaults.g_fog, "G_FOG", args)
-    saveFunc(settings.g_lighting, defaults.g_lighting, "G_LIGHTING", args)
-    saveFunc(settings.g_tex_gen, defaults.g_tex_gen, "G_TEXTURE_GEN", args)
-    saveFunc(settings.g_tex_gen_linear, defaults.g_tex_gen_linear, "G_TEXTURE_GEN_LINEAR", args)
-    saveFunc(settings.g_lod, defaults.g_lod, "G_LOD", args)
-    saveFunc(settings.g_shade_smooth, defaults.g_shade_smooth, "G_SHADING_SMOOTH", args)
+            saveFunc(settings.g_ambocclusion, defaults.g_ambocclusion, "G_AMBOCCLUSION", *args)
+    saveFunc(settings.g_fog, defaults.g_fog, "G_FOG", *args)
+    saveFunc(settings.g_lighting, defaults.g_lighting, "G_LIGHTING", *args)
+    saveFunc(settings.g_tex_gen, defaults.g_tex_gen, "G_TEXTURE_GEN", *args)
+    saveFunc(settings.g_tex_gen_linear, defaults.g_tex_gen_linear, "G_TEXTURE_GEN_LINEAR", *args)
+    saveFunc(settings.g_lod, defaults.g_lod, "G_LOD", *args)
+    saveFunc(settings.g_shade_smooth, defaults.g_shade_smooth, "G_SHADING_SMOOTH", *args)
     if bpy.context.scene.pointLighting:
-        saveFunc(settings.g_lighting_positional, defaults.g_lighting_positional, "G_LIGHTING_POSITIONAL", args)
-    if isUcodeF3DEX1(bpy.context.scene.f3d_ver):
-        saveFunc(settings.g_clipping, defaults.g_clipping, "G_CLIPPING", args)
+        saveFunc(settings.g_lighting_positional, defaults.g_lighting_positional, "G_LIGHTING_POSITIONAL", *args)
+    if isUcodeF3DEX1(bpy.context.scene.f3d_type):
+        saveFunc(settings.g_clipping, defaults.g_clipping, "G_CLIPPING", *args)
 
 
 def saveGeoModeDefinitionF3DEX2(fMaterial, settings, defaults, matWriteMethod):

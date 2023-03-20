@@ -1534,10 +1534,10 @@ class F3D:
         self.G_MWO_POINT_XYSCREEN = 0x18
         self.G_MWO_POINT_ZSCREEN = 0x1C
         
-        self.G_MWO_CLIP_MOD = 0x00
-        self.G_MWO_ATTROFS_ST = 0x04
-        self.G_MWO_ATTROFS_Z = 0x08
-        self.G_MWO_AO = 0x0C
+        self.G_MWO_CLIP_MOD_SETTINGS = 0x00
+        self.G_MWO_ATTR_OFFSET_ST = 0x04
+        self.G_MWO_ATTR_OFFSET_Z = 0x08
+        self.G_MWO_AMB_OCCLUSION = 0x0C
 
         # Texturing macros
 
@@ -1988,10 +1988,11 @@ class GfxFormatter:
 
 
 class Vtx:
-    def __init__(self, position, uv, colorOrNormal):
+    def __init__(self, position, uv, colorOrNormal, packedNormal = 0):
         self.position = position
         self.uv = uv
         self.colorOrNormal = colorOrNormal
+        self.packedNormal = packedNormal
 
     def to_binary(self):
         signX = 1 if self.uv[0] >= 0 else -1
@@ -2001,7 +2002,7 @@ class Vtx:
             self.position[0].to_bytes(2, "big", signed=True)
             + self.position[1].to_bytes(2, "big", signed=True)
             + self.position[2].to_bytes(2, "big", signed=True)
-            + bytearray([0x00, 0x00])
+            + self.packedNormal.to_bytes(2, "big", signed=True)
             + uv[0].to_bytes(2, "big", signed=True)
             + uv[1].to_bytes(2, "big", signed=True)
             + bytearray(self.colorOrNormal)
@@ -2011,7 +2012,8 @@ class Vtx:
         def spc(x):
             return "{" + ", ".join([str(a) for a in x]) + "}"
 
-        return "{{ " + ", ".join([spc(self.position), "0", spc(self.uv), spc(self.colorOrNormal)]) + " }}"
+        flag = "0" if self.packedNormal == 0 else hex(self.packedNormal, 4)
+        return "{{ " + ", ".join([spc(self.position), flag, spc(self.uv), spc(self.colorOrNormal)]) + " }}"
 
 
 class VtxList:
@@ -3802,15 +3804,6 @@ class DPSetHilite2Tile(GbiMacro):
 
 
 @dataclass(unsafe_hash=True)
-class SPAOFactors(GbiMacro):
-    amb: int
-    dir: int
-
-    def to_binary(self, f3d, segments):
-        return gsMoveWd(f3d.G_MW_MODS, f3d.G_MWO_AO, (_SHIFTL(self.amb, 16, 16) | _SHIFTL(self.dir, 0, 16)), f3d)
-
-
-@dataclass(unsafe_hash=True)
 class SPFogFactor(GbiMacro):
     fm: int
     fo: int
@@ -3838,6 +3831,45 @@ class SPFogPosition(GbiMacro):
     def to_c(self, static=True):
         header = "gsSPFogPosition(" if static else "gSPFogPosition(glistp++, "
         return header + str(self.minVal) + ", " + str(self.maxVal) + ")"
+
+
+@dataclass(unsafe_hash=True)
+class SPClipModSettings(GbiMacro):
+    cr: int
+    large: int
+
+    def to_binary(self, f3d, segments):
+        return gsMoveWd(f3d.G_MW_MODS, f3d.G_MWO_CLIP_MOD_SETTINGS,
+            (_SHIFTL(self.cr, 16, 16) | _SHIFTL(self.large, 2, 14)), f3d)
+
+
+@dataclass(unsafe_hash=True)
+class SPAttrOffsetST(GbiMacro):
+    s: int
+    t: int
+
+    def to_binary(self, f3d, segments):
+        return gsMoveWd(f3d.G_MW_MODS, f3d.G_MWO_ATTR_OFFSET_ST,
+            (_SHIFTL(self.s, 16, 16) | _SHIFTL(self.t, 0, 16)), f3d)
+
+
+@dataclass(unsafe_hash=True)
+class SPAttrOffsetZ(GbiMacro):
+    z: int
+
+    def to_binary(self, f3d, segments):
+        return gsMoveWd(f3d.G_MW_MODS, f3d.G_MWO_ATTR_OFFSET_Z,
+            (_SHIFTL(self.z, 16, 16)), f3d)
+
+
+@dataclass(unsafe_hash=True)
+class SPAmbOcclusion(GbiMacro):
+    amb: int
+    dir: int
+
+    def to_binary(self, f3d, segments):
+        return gsMoveWd(f3d.G_MW_MODS, f3d.G_MWO_AMB_OCCLUSION,
+            (_SHIFTL(self.amb, 16, 16) | _SHIFTL(self.dir, 0, 16)), f3d)
 
 
 @dataclass(unsafe_hash=True)

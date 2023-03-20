@@ -835,22 +835,35 @@ class F3DPanel(bpy.types.Panel):
         elif context.scene.gameEditorMode == "OOT":
             prop_split(layout, material.f3d_mat.draw_layer, "oot", "Draw Layer")
 
-    def ui_ao(self, f3dMat, inputCol, showCheckBox):
-        if f3dMat.rdp_settings.g_ambocclusion:
-            inputGroup = inputCol.column()
+    def ui_misc(self, f3dMat, inputCol, showCheckBox):
+        if f3dMat.rdp_settings.g_attroffset_st_enable:
+            if showCheckBox or f3dMat.set_attroffs_st:
+                inputGroup = inputCol.column()
             if showCheckBox:
-                inputGroup.prop(f3dMat, "set_ao", test="Set Ambient Occlusion")
-            if f3dMat.set_ao:
-                r = inputGroup.row().split(factor=0.5)
-                r.label(text="AO Ambient")
-                r.prop(f3dMat, "ao_ambient", text="")
-                r = inputGroup.row().split(factor=0.5)
-                r.label(text="AO Directional")
-                r.prop(f3dMat, "ao_directional", text="")
+                inputGroup.prop(f3dMat, "set_attroffs_st", text="Set ST Attr Offset")
+            if f3dMat.set_attroffs_st:
+                prop_split(inputGroup.row(), f3dMat, "attroffs_st", "ST Attr Offset")
+                
+        if f3dMat.rdp_settings.g_attroffset_z_enable:
+            if showCheckBox or f3dMat.set_attroffs_z:
+                inputGroup = inputCol.column()
+            if showCheckBox:
+                inputGroup.prop(f3dMat, "set_attroffs_z", text="Set Z Attr Offset")
+            if f3dMat.set_attroffs_z:
+                prop_split(inputGroup.row(), f3dMat, "attroffs_z", "Z Attr Offset")
 
-    def ui_fog(self, f3dMat, inputCol, showCheckBox):
+        if f3dMat.rdp_settings.g_ambocclusion:
+            if showCheckBox or f3dMat.set_ao:
+                inputGroup = inputCol.column()
+            if showCheckBox:
+                inputGroup.prop(f3dMat, "set_ao", text="Set Ambient Occlusion")
+            if f3dMat.set_ao:
+                prop_split(inputGroup.row(), f3dMat, "ao_ambient", "AO Ambient")
+                prop_split(inputGroup.row(), f3dMat, "ao_directional", "AO Directional")
+
         if f3dMat.rdp_settings.g_fog:
-            inputGroup = inputCol.column()
+            if showCheckBox or f3dMat.set_fog:
+                inputGroup = inputCol.column()
             if showCheckBox:
                 inputGroup.prop(f3dMat, "set_fog", text="Set Fog")
             if f3dMat.set_fog:
@@ -858,12 +871,8 @@ class F3DPanel(bpy.types.Panel):
                 if f3dMat.use_global_fog:
                     inputGroup.label(text="Only applies to levels (area fog settings).", icon="INFO")
                 else:
-                    fogColorGroup = inputGroup.row().split(factor=0.5)
-                    fogColorGroup.label(text="Fog Color")
-                    fogColorGroup.prop(f3dMat, "fog_color", text="")
-                    fogPositionGroup = inputGroup.row().split(factor=0.5)
-                    fogPositionGroup.label(text="Fog Range")
-                    fogPositionGroup.prop(f3dMat, "fog_position", text="")
+                    prop_split(inputGroup.row(), f3dMat, "fog_color", "Fog Color")
+                    prop_split(inputGroup.row(), f3dMat, "fog_position", "Fog Range")
 
     def drawVertexColorNotice(self, layout):
         noticeBox = layout.box().column()
@@ -916,11 +925,7 @@ class F3DPanel(bpy.types.Panel):
         if useDict["Convert"] and f3dMat.set_k0_5:
             self.ui_convert(f3dMat, inputCol, False)
 
-        if f3dMat.set_ao:
-            self.ui_ao(f3dMat, inputCol, False)
-
-        if f3dMat.set_fog:
-            self.ui_fog(f3dMat, inputCol, False)
+        self.ui_misc(f3dMat, inputCol, False)
 
     def draw_full(self, f3dMat, material, layout: bpy.types.UILayout, context):
 
@@ -1019,9 +1024,7 @@ class F3DPanel(bpy.types.Panel):
             if useDict["Convert"]:
                 self.ui_convert(f3dMat, inputCol, True)
 
-            self.ui_ao(f3dMat, inputCol, True)
-
-            self.ui_fog(f3dMat, inputCol, True)
+            self.ui_misc(f3dMat, inputCol, True)
 
         if menuTab == "Geo":
             ui_geo_mode(f3dMat.rdp_settings, f3dMat, layout, False)
@@ -3665,6 +3668,27 @@ class F3DMaterialProperty(bpy.types.PropertyGroup):
     f3d_light6: bpy.props.PointerProperty(type=bpy.types.Light, update=F3DOrganizeLights)
     f3d_light7: bpy.props.PointerProperty(type=bpy.types.Light, update=F3DOrganizeLights)
 
+    # Attribute Offsets
+    attroffs_st: bpy.props.FloatVectorProperty(
+        name="ST Attr Offset",
+        size=2,
+        min=-1024.0,
+        max=1024.0,
+        default=(0.0, 0.0),
+        description="Offset applied to ST (UV) coordinates, after texture scale. Units are texels. Usually for UV scrolling",
+        update=update_node_values_without_preset,
+    )
+    attroffs_z: bpy.props.IntProperty(
+        name="Z Attr Offset",
+        min=-0x8000,
+        max=0x7FFF,
+        default=-2,
+        description="Offset applied to Z coordinate. To fix decals, set Z mode to opaque and set Z attr offset to something like -2",
+        update=update_node_values_without_preset,
+    )
+    set_attroffs_st: bpy.props.BoolProperty(update=update_node_values_without_preset)
+    set_attroffs_z: bpy.props.BoolProperty(update=update_node_values_without_preset)
+        
     # Ambient Occlusion
     ao_ambient: bpy.props.FloatProperty(
         name="AO Ambient",
@@ -3755,7 +3779,9 @@ class F3DMaterialProperty(bpy.types.PropertyGroup):
             round(self.k5, 4) if self.set_k0_5 else None,
             self.combiner1.key() if self.set_combiner else None,
             self.combiner2.key() if self.set_combiner else None,
-            tuple(self.ao_ambient, self.ao_directional) if self.set_ao else None,
+            tuple([round(value, 4) for value in self.attroffs_st]) if self.set_attroffs_st else None,
+            self.attroffs_z if self.set_attroffs_z else None,
+            tuple([round(value, 4) for value in (self.ao_ambient, self.ao_directional)]) if self.set_ao else None,
             tuple([round(value, 4) for value in self.fog_color]) if self.set_fog else None,
             tuple([round(value, 4) for value in self.fog_position]) if self.set_fog else None,
             tuple([round(value, 4) for value in self.default_light_color]) if useDefaultLighting else None,
