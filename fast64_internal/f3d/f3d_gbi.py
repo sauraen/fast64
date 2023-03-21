@@ -2012,7 +2012,7 @@ class Vtx:
         def spc(x):
             return "{" + ", ".join([str(a) for a in x]) + "}"
 
-        flag = "0" if self.packedNormal == 0 else hex(self.packedNormal, 4)
+        flag = "0" if self.packedNormal == 0 else hex(self.packedNormal)
         return "{{ " + ", ".join([spc(self.position), flag, spc(self.uv), spc(self.colorOrNormal)]) + " }}"
 
 

@@ -70,10 +70,8 @@ from ..f3d.f3d_writer import (
     saveOrGetF3DMaterial,
     saveMeshWithLargeTexturesByFaces,
     saveMeshByFaces,
-    isLightingDisabled,
     getF3DVert,
     isTexturePointSampled,
-    convertVertexData,
 )
 
 from ..f3d.f3d_gbi import (
@@ -2599,8 +2597,7 @@ def splitSkinnedFacesIntoTwoGroups(skinnedFaces, fModel, obj, uv_data, drawLayer
         material = obj.material_slots[material_index].material
         fMaterial, texDimensions = saveOrGetF3DMaterial(material, fModel, obj, drawLayer, convertTextureData)
 
-        exportVertexColors = isLightingDisabled(material)
-        convertInfo = LoopConvertInfo(uv_data, obj, exportVertexColors)
+        convertInfo = LoopConvertInfo(uv_data, obj, material)
         for skinnedFace in skinnedFaceArray:
             for (face, loop) in skinnedFace.loopsInGroup:
                 f3dVert = getF3DVert(loop, face, convertInfo, obj.data)
@@ -2687,7 +2684,6 @@ def saveSkinnedMeshByMaterial(
         materialKey = (material, drawLayerKey, fModel.global_data.getCurrentAreaKey(material))
         fMaterial, texDimensions = fModel.getMaterialAndHandleShared(materialKey)
         isPointSampled = isTexturePointSampled(material)
-        exportVertexColors = isLightingDisabled(material)
 
         skinnedTriGroup = fSkinnedMesh.tri_group_new(fMaterial)
         fSkinnedMesh.draw.commands.append(SPDisplayList(fMaterial.material))
@@ -2699,15 +2695,11 @@ def saveSkinnedMeshByMaterial(
 
         for bufferVert in vertData:
             skinnedTriGroup.vertexList.vertices.append(
-                convertVertexData(
+                bufferVert.f3dVert.toVtx(
                     obj.data,
-                    bufferVert.f3dVert.position,
-                    bufferVert.f3dVert.uv,
-                    bufferVert.f3dVert.getColorOrNormal(),
                     texDimensions,
                     parentMatrix,
                     isPointSampled,
-                    exportVertexColors,
                 )
             )
 
@@ -2766,7 +2758,6 @@ def saveSkinnedMeshByMaterial(
     # 	fMaterial, texDimensions = \
     # 		saveOrGetF3DMaterial(material, fModel, obj, drawLayer, convertTextureData)
     # 	isPointSampled = isTexturePointSampled(material)
-    # 	exportVertexColors = isLightingDisabled(material)
     #
     # 	triGroup = fMesh.tri_group_new(fMaterial)
     # 	fMesh.draw.commands.append(SPDisplayList(fMaterial.material))
@@ -2774,14 +2765,14 @@ def saveSkinnedMeshByMaterial(
     # 	if fMaterial.revert is not None:
     # 		fMesh.draw.commands.append(SPDisplayList(fMaterial.revert))
     #
-    # 	convertInfo = LoopConvertInfo(uv_data, obj, exportVertexColors)
+    # 	convertInfo = LoopConvertInfo(uv_data, obj, material)
     # 	triConverter = TriangleConverter(triConverterInfo, texDimensions, material,
     # 		None, triGroup.triList, triGroup.vertexList, copy.deepcopy(existingVertData), copy.deepcopy(matRegionDict))
     # 	saveTriangleStrip(triConverter, [skinnedFace.bFace for skinnedFace in skinnedFaceArray], obj.data, True)
     # 	saveTriangleStrip(triConverterClass,
     # 		[skinnedFace.bFace for skinnedFace in skinnedFaceArray],
     # 		convertInfo, triGroup.triList, triGroup.vertexList, fModel.f3d,
-    # 		texDimensions, currentMatrix, isPointSampled, exportVertexColors,
+    # 		texDimensions, currentMatrix, isPointSampled,
     # 		copy.deepcopy(existingVertData), copy.deepcopy(matRegionDict),
     # 		infoDict, obj.data, None, True)
 

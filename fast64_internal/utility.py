@@ -1424,7 +1424,7 @@ def unpackNormalS8(packedNormal):
     x, y = xo & 0x7F, yo & 0x7F
     z = x + y
     zNeg = bool(z & 0x80)
-    x2, y2 = x ^ 0x7F, y ^ 0x7F
+    x2, y2 = x ^ 0x7F, y ^ 0x7F # 7F - x, 7F - y
     z = z ^ 0x7F # = 7F - x - y
     if zNeg:
         x, y = x2, y2
@@ -1434,8 +1434,15 @@ def unpackNormalS8(packedNormal):
     return x, y, z
 
 
+def unpackNormal(packedNormal):
+    x, y, z = unpackNormalS8(packedNormal)
+    l2norm = math.sqrt(x**2 + y**2 + z**2)
+    return Vector((x/l2norm, y/l2norm, z/l2norm))
+
+
 def packNormal(normal):
     # Convert standard normal to constant-L1 normal
+    assert len(normal) == 3
     l1norm = abs(normal[0]) + abs(normal[1]) + abs(normal[2])
     xo, yo, zo = tuple([int(round(a * 127.0 / l1norm)) for a in normal])
     if abs(xo) + abs(yo) > 127:

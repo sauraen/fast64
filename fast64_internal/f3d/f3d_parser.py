@@ -658,6 +658,7 @@ class F3DContext:
         uv = [convertF3DUV(f3dVert.uv[i], texDimensions[i]) for i in range(2)]
         uv[1] = 1 - uv[1]
 
+        alpha = TODO()
         color = [
             value / 256
             if value > 0
@@ -669,7 +670,7 @@ class F3DContext:
         normal = (transform.inverted().transposed() @ mathutils.Vector(normal)).normalized()[:3]
 
         # NOTE: The groupIndex here does NOT correspond to a vertex group, but to the name of the limb (c variable)
-        return BufferVertex(F3DVert(position, uv, color, normal), bufferVert.groupIndex, bufferVert.materialIndex)
+        return BufferVertex(F3DVert(position, uv, rgb, normal, alpha), bufferVert.groupIndex, bufferVert.materialIndex)
 
     def addVertices(self, num, start, vertexDataName, vertexDataOffset):
         vertexData = self.vertexData[vertexDataName]
@@ -1947,6 +1948,7 @@ def parseVertexData(dlData: str, vertexDataName: str, f3dContext: F3DContext):
         # When loaded into the vertex buffer and transformed, the actual normal/color will be calculated.
         vertexData = [
             F3DVert(
+                TODO(),
                 mathutils.Vector(
                     [math_eval(match.group(1), f3d), math_eval(match.group(2), f3d), math_eval(match.group(3), f3d)]
                 ),
