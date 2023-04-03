@@ -1535,9 +1535,10 @@ class F3D:
         self.G_MWO_POINT_ZSCREEN = 0x1C
         
         self.G_MWO_CLIP_MOD_SETTINGS = 0x00
-        self.G_MWO_ATTR_OFFSET_ST = 0x04
-        self.G_MWO_ATTR_OFFSET_Z = 0x08
-        self.G_MWO_AMB_OCCLUSION = 0x0C
+        self.G_MWO_AMB_OCCLUSION = 0x04
+        self.G_MWO_FRESNEL = 0x08
+        self.G_MWO_ATTR_OFFSET_ST = 0x0C
+        self.G_MWO_ATTR_OFFSET_Z = 0x10
 
         # Texturing macros
 

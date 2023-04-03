@@ -602,14 +602,14 @@ class F3DContext:
             # decomp format
             "\{\s*\{\s*"
             + "\{([^,\}]*),([^,\}]*),([^,\}]*)\}\s*,"
-            + "[^,\}]*,\s*"
+            + "([^,\}]*),\s*"
             + "\{([^,\}]*),([^,\}]*)\}\s*,\s*"
             + "\{([^,\}]*),([^,\}]*),([^,\}]*),([^,\}]*)\}\s*"
             + "\}\s*\}",
             # nusys format
             "\{\s*"
             + "([^,\}]*),([^,\}]*),([^,\}]*),"
-            + "[^,\}]*,"
+            + "([^,\}]*),"
             + "([^,\}]*),([^,\}]*),"
             + "([^,\}]*),([^,\}]*),([^,\}]*),([^,\}]*)\s*"
             + "\}",
@@ -658,16 +658,16 @@ class F3DContext:
         uv = [convertF3DUV(f3dVert.uv[i], texDimensions[i]) for i in range(2)]
         uv[1] = 1 - uv[1]
 
-        alpha = TODO()
-        color = [
-            value / 256
-            if value > 0
-            else int.from_bytes(round(value).to_bytes(1, "big", signed=True), "big", signed=False) / 256
-            for value in f3dVert.getColorOrNormal()
-        ]
-
-        normal = bytesToNormal(f3dVert.getColorOrNormal()[:3]) + [0]
-        normal = (transform.inverted().transposed() @ mathutils.Vector(normal)).normalized()[:3]
+        has_rgb, has_normal, has_packed_normals = getRgbNormalSettings(self.mat())
+        rgb = mathutils.Vector([v / 0xFF for v in f3dVert.rgb]) if has_rgb else None
+        alpha = f3dVert.alpha / 0xFF
+        normal = None
+        if has_normal:
+            if has_packed_normals:
+                normal = f3dVert.normal
+            else:
+                normal = mathutils.Vector([v - 0x100 if v >= 0x80 else v for v in f3dVert.rgb]).normalized()
+            normal = (transform.inverse().transposed() @ normal).normalized()
 
         # NOTE: The groupIndex here does NOT correspond to a vertex group, but to the name of the limb (c variable)
         return BufferVertex(F3DVert(position, uv, rgb, normal, alpha), bufferVert.groupIndex, bufferVert.materialIndex)
@@ -1941,27 +1941,22 @@ def parseVertexData(dlData: str, vertexDataName: str, f3dContext: F3DContext):
     patterns = f3dContext.vertexFormatPatterns(data)
     vertexData = []
     for pattern in patterns:
-        # Note that color is None here, as we are just parsing vertex data.
-        # The same values should be used for color and normal, but getColorOrNormal() will be used later
-        # which returns whichever value is not None between the two.
-
-        # When loaded into the vertex buffer and transformed, the actual normal/color will be calculated.
+        # For this step, store rgb/normal as rgb and packed normal as normal.
         vertexData = [
             F3DVert(
-                TODO(),
                 mathutils.Vector(
                     [math_eval(match.group(1), f3d), math_eval(match.group(2), f3d), math_eval(match.group(3), f3d)]
                 ),
-                mathutils.Vector([math_eval(match.group(4), f3d), math_eval(match.group(5), f3d)]),
-                None,
+                mathutils.Vector([math_eval(match.group(5), f3d), math_eval(match.group(6), f3d)]),
                 mathutils.Vector(
                     [
-                        math_eval(match.group(6), f3d),
                         math_eval(match.group(7), f3d),
                         math_eval(match.group(8), f3d),
                         math_eval(match.group(9), f3d),
                     ]
                 ),
+                unpackNormal(match.group(4)),
+                math_eval(match.group(10), f3d),
             )
             for match in re.finditer(pattern, data, re.DOTALL)
         ]

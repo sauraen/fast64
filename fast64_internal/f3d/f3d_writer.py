@@ -1083,14 +1083,10 @@ def getF3DVert(loop: bpy.types.MeshLoop, face, convertInfo: LoopConvertInfo, mes
     uv[1] = 1 - uv[1]
     uv = uv.freeze()
     
-    rdp_settings = convertInfo.material.f3d_mat.rdp_settings
-    has_packed_normals = bpy.context.scene.isCustomUcode and bpy.context.scene.customUcode.has_packed_normals
-    has_color = not rdp_settings.g_lighting or (has_packed_normals and rdp_settings.g_packed_normals)
-    has_normal = rdp_settings.g_lighting
-    
+    has_rgb, has_normal, _ = getRgbNormalSettings(convertInfo.material)
     mesh = convertInfo.obj.data
     color = getLoopColor(loop, mesh)
-    rgb = color[:3] if has_color else None
+    rgb = color[:3] if has_rgb else None
     normal = getLoopNormal(loop) if has_normal else None
     alpha = color[3]
 

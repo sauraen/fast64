@@ -1435,9 +1435,8 @@ def unpackNormalS8(packedNormal):
 
 
 def unpackNormal(packedNormal):
-    x, y, z = unpackNormalS8(packedNormal)
-    l2norm = math.sqrt(x**2 + y**2 + z**2)
-    return Vector((x/l2norm, y/l2norm, z/l2norm))
+    # Convert constant-L1 norm to standard L2 norm
+    return Vector(unpackNormalS8(packedNormal)).normalized()
 
 
 def packNormal(normal):
@@ -1458,6 +1457,14 @@ def packNormal(normal):
     packedNormal = x << 8 | y
     assert (xo, yo, zo) == unpackNormalS8(packedNormal)
     return packedNormal
+    
+    
+def getRgbNormalSettings(material):
+    rdp_settings = material.f3d_mat.rdp_settings
+    has_packed_normals = bpy.context.scene.isCustomUcode and bpy.context.scene.customUcode.has_packed_normals
+    has_rgb = not rdp_settings.g_lighting or (has_packed_normals and rdp_settings.g_packed_normals)
+    has_normal = rdp_settings.g_lighting
+    return has_rgb, has_normal, has_packed_normals
     
 
 def byteMask(data, offset, amount):
